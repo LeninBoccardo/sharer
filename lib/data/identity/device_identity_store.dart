@@ -1,10 +1,13 @@
-import 'dart:io' show Platform;
-
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../domain/entities/device_identity.dart';
 import '../../domain/repositories/device_identity_repository.dart';
+
+/// Resolves the human-readable default name for this device. Injected so
+/// platform-coupled code (device_info_plus) stays out of the store and can
+/// be swapped in tests.
+typedef DefaultDeviceNameResolver = Future<String> Function();
 
 class DeviceIdentityStore implements DeviceIdentityRepository {
   static const _idKey = 'device.identity.id';
@@ -12,10 +15,16 @@ class DeviceIdentityStore implements DeviceIdentityRepository {
 
   final SharedPreferences _prefs;
   final Uuid _uuid;
+  final DefaultDeviceNameResolver _defaultName;
 
   DeviceIdentity? _cached;
 
-  DeviceIdentityStore(this._prefs, {Uuid? uuid}) : _uuid = uuid ?? const Uuid();
+  DeviceIdentityStore(
+    this._prefs, {
+    Uuid? uuid,
+    DefaultDeviceNameResolver? defaultName,
+  })  : _uuid = uuid ?? const Uuid(),
+        _defaultName = defaultName ?? _fallbackDefaultName;
 
   @override
   Future<DeviceIdentity> get() async {
@@ -28,7 +37,13 @@ class DeviceIdentityStore implements DeviceIdentityRepository {
       await _prefs.setString(_idKey, id);
     }
 
-    final name = _prefs.getString(_nameKey) ?? _defaultName();
+    var name = _prefs.getString(_nameKey);
+    if (name == null) {
+      name = await _defaultName();
+      // Persist on first resolution so the name is stable across launches.
+      await _prefs.setString(_nameKey, name);
+    }
+
     final identity = DeviceIdentity(id: id, name: name);
     _cached = identity;
     return identity;
@@ -36,18 +51,12 @@ class DeviceIdentityStore implements DeviceIdentityRepository {
 
   @override
   Future<void> rename(String name) async {
-    await _prefs.setString(_nameKey, name);
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    await _prefs.setString(_nameKey, trimmed);
     final current = await get();
-    _cached = DeviceIdentity(id: current.id, name: name);
+    _cached = DeviceIdentity(id: current.id, name: trimmed);
   }
 
-  String _defaultName() {
-    try {
-      final host = Platform.localHostname;
-      if (host.isNotEmpty && host != 'localhost') return host;
-    } catch (_) {
-      // Platform.localHostname can throw on web / restricted environments.
-    }
-    return 'Sharer device';
-  }
+  static Future<String> _fallbackDefaultName() async => 'Sharer device';
 }

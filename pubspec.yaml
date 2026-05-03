@@ -53,6 +53,9 @@ dependencies:
   # Stable random device IDs.
   uuid: ^4.5.1
 
+  # Per-platform device name resolution (default identity name).
+  device_info_plus: ^11.2.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

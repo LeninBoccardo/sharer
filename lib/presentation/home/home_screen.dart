@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../domain/entities/peer.dart';
+import '../diagnostics/diagnostics_screen.dart';
 import 'quiet_mode_banner.dart';
 
 class HomeScreen extends ConsumerWidget {
@@ -17,6 +18,17 @@ class HomeScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Sharer'),
         centerTitle: false,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: 'You & networks',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const DiagnosticsScreen(),
+              ),
+            ),
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(

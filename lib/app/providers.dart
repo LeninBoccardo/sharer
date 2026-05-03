@@ -3,10 +3,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/discovery/mdns_peer_discovery.dart';
 import '../data/identity/device_identity_store.dart';
+import '../data/identity/platform_device_name.dart';
 import '../data/network/network_source.dart';
 import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
 import '../data/storage/peer_cache_store.dart';
+import '../domain/entities/device_identity.dart';
 import '../domain/entities/network_info.dart';
 import '../domain/entities/peer.dart';
 import '../domain/repositories/device_identity_repository.dart';
@@ -27,8 +29,22 @@ final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
   );
 });
 
+/// Per-platform default device-name resolver. Override in tests with a
+/// fixed string so DeviceIdentityStore tests don't touch device_info_plus.
+final defaultDeviceNameResolverProvider =
+    Provider<DefaultDeviceNameResolver>((ref) => readPlatformDeviceName);
+
 final deviceIdentityRepoProvider = Provider<DeviceIdentityRepository>((ref) {
-  return DeviceIdentityStore(ref.watch(sharedPreferencesProvider));
+  return DeviceIdentityStore(
+    ref.watch(sharedPreferencesProvider),
+    defaultName: ref.watch(defaultDeviceNameResolverProvider),
+  );
+});
+
+/// Convenience FutureProvider for UI consumers that want the resolved
+/// identity (the repo's get() is async on first call).
+final deviceIdentityProvider = FutureProvider<DeviceIdentity>((ref) {
+  return ref.watch(deviceIdentityRepoProvider).get();
 });
 
 final trustedNetworksStoreProvider = Provider<TrustedNetworksStore>((ref) {
@@ -56,6 +72,10 @@ final currentNetworkProvider = StreamProvider<NetworkInfo?>((ref) {
 
 final isOnTrustedNetworkProvider = StreamProvider<bool>((ref) {
   return ref.watch(networkWatcherProvider).watchIsTrusted();
+});
+
+final trustedNetworksProvider = StreamProvider<Set<String>>((ref) {
+  return ref.watch(networkWatcherProvider).watchTrusted();
 });
 
 final peerCacheProvider = Provider<PeerCacheRepository>((ref) {

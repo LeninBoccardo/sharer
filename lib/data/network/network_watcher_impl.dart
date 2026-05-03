@@ -14,12 +14,15 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
 
   final _network = StreamController<NetworkInfo?>.broadcast();
   final _isTrusted = StreamController<bool>.broadcast();
+  final _trustedSet = StreamController<Set<String>>.broadcast();
 
   NetworkInfo? _latest;
+  late Set<String> _trustedCache;
   StreamSubscription<void>? _sub;
   bool _disposed = false;
 
   NetworkWatcherImpl(this._source, this._trusted) {
+    _trustedCache = _trusted.load();
     _sub = _source.connectivityChanges().listen((_) => _refresh());
     // Initial sample so consumers don't have to wait for the first change.
     unawaited(_refresh());
@@ -36,7 +39,11 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
   bool _evaluateTrust() {
     final n = _latest;
     if (n == null) return false;
-    return _trusted.contains(n.fingerprint);
+    return _trustedCache.contains(n.fingerprint);
+  }
+
+  void _emitTrustedSet() {
+    _trustedSet.add(Set<String>.unmodifiable(_trustedCache));
   }
 
   @override
@@ -51,13 +58,22 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
   @override
   Future<void> trust(NetworkInfo info) async {
     await _trusted.add(info.fingerprint);
+    _trustedCache = _trusted.load();
     _isTrusted.add(_evaluateTrust());
+    _emitTrustedSet();
   }
 
   @override
   Future<void> untrust(NetworkInfo info) async {
-    await _trusted.remove(info.fingerprint);
+    await untrustFingerprint(info.fingerprint);
+  }
+
+  @override
+  Future<void> untrustFingerprint(String fingerprint) async {
+    await _trusted.remove(fingerprint);
+    _trustedCache = _trusted.load();
     _isTrusted.add(_evaluateTrust());
+    _emitTrustedSet();
   }
 
   @override
@@ -66,10 +82,17 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
     yield* _isTrusted.stream;
   }
 
+  @override
+  Stream<Set<String>> watchTrusted() async* {
+    yield Set<String>.unmodifiable(_trustedCache);
+    yield* _trustedSet.stream;
+  }
+
   Future<void> dispose() async {
     _disposed = true;
     await _sub?.cancel();
     await _network.close();
     await _isTrusted.close();
+    await _trustedSet.close();
   }
 }

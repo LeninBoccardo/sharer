@@ -17,4 +17,11 @@ abstract class NetworkWatcherRepository {
 
   /// Reactive view of "is the current network in the trusted set?"
   Stream<bool> watchIsTrusted();
+
+  /// Reactive view of all trusted-network fingerprints (so the UI can
+  /// list and remove entries).
+  Stream<Set<String>> watchTrusted();
+
+  /// Removes a previously-trusted fingerprint by its raw key.
+  Future<void> untrustFingerprint(String fingerprint);
 }

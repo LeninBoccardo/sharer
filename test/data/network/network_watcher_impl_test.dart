@@ -73,6 +73,43 @@ void main() {
       await sub.cancel();
     });
 
+    test('watchTrusted emits the set after trust/untrust', () async {
+      final home = const NetworkInfo(
+        ssid: 'Home',
+        ipv4: '192.168.1.10',
+        subnet: '192.168.1.0/24',
+      );
+      final cafe = const NetworkInfo(
+        ssid: 'Cafe',
+        ipv4: '10.0.0.5',
+        subnet: '10.0.0.0/24',
+      );
+      final source = FakeNetworkSource(initial: home);
+      final watcher = NetworkWatcherImpl(source, trusted);
+      addTearDown(watcher.dispose);
+      await Future<void>.delayed(Duration.zero);
+
+      final emissions = <Set<String>>[];
+      final sub = watcher.watchTrusted().listen((s) => emissions.add(s));
+
+      await Future<void>.delayed(Duration.zero);
+      expect(emissions.last, isEmpty);
+
+      await watcher.trust(home);
+      await Future<void>.delayed(Duration.zero);
+      expect(emissions.last, equals({home.fingerprint}));
+
+      await watcher.trust(cafe);
+      await Future<void>.delayed(Duration.zero);
+      expect(emissions.last, equals({home.fingerprint, cafe.fingerprint}));
+
+      await watcher.untrustFingerprint(home.fingerprint);
+      await Future<void>.delayed(Duration.zero);
+      expect(emissions.last, equals({cafe.fingerprint}));
+
+      await sub.cancel();
+    });
+
     test('disconnecting Wi-Fi flips isTrusted back to false', () async {
       final home = const NetworkInfo(
         ssid: 'Home',
