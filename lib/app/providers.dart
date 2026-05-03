@@ -1,14 +1,72 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import '../data/discovery/in_memory_peer_discovery.dart';
+import '../data/discovery/mdns_peer_discovery.dart';
+import '../data/identity/device_identity_store.dart';
+import '../data/network/network_source.dart';
+import '../data/network/network_watcher_impl.dart';
+import '../data/network/trusted_networks_store.dart';
+import '../data/storage/peer_cache_store.dart';
+import '../domain/entities/network_info.dart';
 import '../domain/entities/peer.dart';
+import '../domain/repositories/device_identity_repository.dart';
+import '../domain/repositories/network_watcher_repository.dart';
+import '../domain/repositories/peer_cache_repository.dart';
 import '../domain/repositories/peer_discovery_repository.dart';
 
 /// Composition root: every cross-layer binding is declared here so that
 /// presentation code never reaches into `data/` directly. To swap an impl
-/// (e.g. real mDNS in Slice 2), override this provider — no UI changes needed.
+/// (e.g. for tests), override the relevant provider — no UI changes needed.
+
+/// Overridden in `main()` once SharedPreferences has loaded. Tests should
+/// supply their own override via `SharedPreferences.setMockInitialValues({})`
+/// + `getInstance()` and override here.
+final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
+  throw UnimplementedError(
+    'sharedPreferencesProvider must be overridden in main()/tests',
+  );
+});
+
+final deviceIdentityRepoProvider = Provider<DeviceIdentityRepository>((ref) {
+  return DeviceIdentityStore(ref.watch(sharedPreferencesProvider));
+});
+
+final trustedNetworksStoreProvider = Provider<TrustedNetworksStore>((ref) {
+  return TrustedNetworksStore(ref.watch(sharedPreferencesProvider));
+});
+
+/// Production network source. Override with a fake in tests / when running
+/// the app on a platform without Wi-Fi APIs (e.g. headless CI).
+final networkSourceProvider = Provider<NetworkSource>((ref) {
+  return PlatformNetworkSource();
+});
+
+final networkWatcherProvider = Provider<NetworkWatcherRepository>((ref) {
+  final watcher = NetworkWatcherImpl(
+    ref.watch(networkSourceProvider),
+    ref.watch(trustedNetworksStoreProvider),
+  );
+  ref.onDispose(watcher.dispose);
+  return watcher;
+});
+
+final currentNetworkProvider = StreamProvider<NetworkInfo?>((ref) {
+  return ref.watch(networkWatcherProvider).watch();
+});
+
+final isOnTrustedNetworkProvider = StreamProvider<bool>((ref) {
+  return ref.watch(networkWatcherProvider).watchIsTrusted();
+});
+
+final peerCacheProvider = Provider<PeerCacheRepository>((ref) {
+  return PeerCacheStore(ref.watch(sharedPreferencesProvider));
+});
+
 final peerDiscoveryProvider = Provider<PeerDiscoveryRepository>((ref) {
-  final discovery = InMemoryPeerDiscovery();
+  final discovery = MdnsPeerDiscovery(
+    identityRepo: ref.watch(deviceIdentityRepoProvider),
+    shouldAnnounce: ref.watch(networkWatcherProvider).watchIsTrusted(),
+  );
   ref.onDispose(discovery.dispose);
   discovery.start();
   return discovery;

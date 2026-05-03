@@ -39,9 +39,25 @@ dependencies:
   # Clean Architecture layers (see docs/v1/architecture.md).
   flutter_riverpod: ^2.5.1
 
+  # mDNS / DNS-SD discovery + announce. Picked over the Flutter team's
+  # multicast_dns package because that one is discovery-only (no announce).
+  bonsoir: ^5.1.10
+
+  # Network watcher inputs.
+  connectivity_plus: ^6.1.0
+  network_info_plus: ^6.1.1
+
+  # Lightweight persistence for device identity, trusted networks, peer cache.
+  shared_preferences: ^2.3.3
+
+  # Stable random device IDs.
+  uuid: ^4.5.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  mocktail: ^1.0.4
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

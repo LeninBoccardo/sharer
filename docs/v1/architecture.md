@@ -12,7 +12,7 @@ domain/         Pure Dart. Entities (Peer, Transfer, FilePayload),
    ▲
    │
 data/           Concrete adapters: shelf HTTP server, Dio client,
-                multicast_dns wrapper, secure storage, file system.
+                bonsoir wrapper, secure storage, file system.
 ```
 
 Dependencies point inward. `domain` imports nothing from `data` or `presentation` and contains no Flutter imports. Composition root (in `presentation` or a top-level `app/` module) wires concrete `data` implementations into the `domain` interfaces.
@@ -25,8 +25,8 @@ Each subsystem is a separately testable module behind a `domain` interface.
 | --- | --- | --- |
 | HTTP server (shelf) | Always on (any network) | Streams uploads to disk; never buffers full files. Port 8080 default, fall back if taken. Authenticated by HMAC + cert pinning, so it's safe to leave running on unfamiliar networks. |
 | HTTP client | On demand | Streams from disk. Uses connection pooling for chunked transfers. |
-| mDNS announcer (`_sharer._tcp`) | **Event driven, trusted networks only.** | Activates when share UI opens or app is foregrounded. **Suppressed entirely on unrecognized networks** (quiet mode). Stops after a quiet period. |
-| mDNS listener | Passive, low-cost, always on | Maintains in-memory peer list with TTL expiry. Runs even on unrecognized networks so we still discover a paired peer that announces itself there. |
+| mDNS announcer (`_sharer._tcp`) | **Trusted networks only.** | Implemented with `bonsoir` (chosen over Flutter's `multicast_dns` because that package is discovery-only). **Suppressed entirely on unrecognized networks** (quiet mode). |
+| mDNS listener | Passive, low-cost, always on | Implemented with `bonsoir`. Maintains in-memory peer list keyed by `deviceId` (advertised in TXT). Runs even on unrecognized networks so paired peers that announce themselves there are still found. |
 | Network watcher | Always on | Polls SSID + subnet every ~5 s. On unrecognized network, sets the announcer to quiet mode and surfaces a banner. **Does not stop the server.** Trust boundary is pairing, not network — see [security.md](security.md). |
 | Peer cache | Persistent | Last-known peer IP + cert fingerprint per paired device, used for optimistic connect. Survives across networks so paired peers can be reached even when neither side is announcing. |
 
@@ -79,7 +79,7 @@ lib/
     repositories/     peer_discovery.dart (interface), transfer_service.dart (interface)
     usecases/         send_file.dart, receive_file.dart, pair_device.dart
   data/
-    discovery/        mdns_peer_discovery.dart  (impl of PeerDiscovery)
+    discovery/        mdns_peer_discovery.dart  (impl of PeerDiscovery via bonsoir)
     transport/        shelf_server.dart, http_client_transport.dart
     security/         psk_store.dart, hmac_signer.dart, tls_pin.dart
     storage/          downloads_path.dart, peer_cache.dart
