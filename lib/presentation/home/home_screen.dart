@@ -1,9 +1,13 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:mime/mime.dart';
 
 import '../../app/providers.dart';
+import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/peer.dart';
 import '../diagnostics/diagnostics_screen.dart';
+import '../transfers/transfers_section.dart';
 import 'quiet_mode_banner.dart';
 
 class HomeScreen extends ConsumerWidget {
@@ -41,13 +45,15 @@ class HomeScreen extends ConsumerWidget {
               const SizedBox(height: 12),
               Expanded(
                 child: peersAsync.when(
-                  loading: () => const Center(child: CircularProgressIndicator()),
+                  loading: () =>
+                      const Center(child: CircularProgressIndicator()),
                   error: (e, _) => Center(child: Text('Error: $e')),
                   data: (peers) => peers.isEmpty
                       ? const _EmptyState()
                       : _PeerList(peers: peers),
                 ),
               ),
+              const TransfersSection(),
             ],
           ),
         ),
@@ -72,7 +78,8 @@ class _EmptyState extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             'Devices on the same Wi-Fi running Sharer will appear here.',
-            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: theme.colorScheme.outline),
             textAlign: TextAlign.center,
           ),
         ],
@@ -96,27 +103,71 @@ class _PeerList extends StatelessWidget {
   }
 }
 
-class _PeerTile extends StatelessWidget {
+class _PeerTile extends ConsumerWidget {
   const _PeerTile({required this.peer});
 
   final Peer peer;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return Card(
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         leading: CircleAvatar(
           backgroundColor: theme.colorScheme.primaryContainer,
-          child: Icon(Icons.devices, color: theme.colorScheme.onPrimaryContainer),
+          child: Icon(Icons.devices,
+              color: theme.colorScheme.onPrimaryContainer),
         ),
         title: Text(peer.name),
-        subtitle: Text(peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…'),
+        subtitle:
+            Text(peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…'),
         trailing: peer.isPaired
             ? Icon(Icons.verified_user, color: theme.colorScheme.primary)
-            : null,
+            : const Icon(Icons.send),
+        onTap: peer.isReachable ? () => _pickAndSend(context, ref) : null,
       ),
     );
+  }
+
+  Future<void> _pickAndSend(BuildContext context, WidgetRef ref) async {
+    final FilePickerResult? result;
+    try {
+      result = await FilePicker.platform.pickFiles(withReadStream: true);
+    } catch (e) {
+      if (!context.mounted) return;
+      _toast(context, 'File picker error: $e');
+      return;
+    }
+    if (result == null || result.files.isEmpty) return;
+
+    final picked = result.files.first;
+    final stream = picked.readStream;
+    if (stream == null) {
+      if (!context.mounted) return;
+      _toast(context, 'Could not read file (no stream available).');
+      return;
+    }
+
+    final payload = FilePayload(
+      fileName: picked.name,
+      sizeBytes: picked.size,
+      bytes: stream,
+      mimeType: lookupMimeType(picked.name),
+    );
+
+    try {
+      final transfer =
+          await ref.read(transferServiceProvider).send(peer: peer, file: payload);
+      if (!context.mounted) return;
+      _toast(context, 'Sending ${transfer.fileName} → ${peer.name}…');
+    } catch (e) {
+      if (!context.mounted) return;
+      _toast(context, 'Send failed: $e');
+    }
+  }
+
+  void _toast(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 }

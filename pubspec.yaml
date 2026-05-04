@@ -56,6 +56,18 @@ dependencies:
   # Per-platform device name resolution (default identity name).
   device_info_plus: ^11.2.0
 
+  # HTTP transport. shelf for the receiving server; dart:io HttpClient
+  # for sending (already available, no extra dep).
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+
+  # File picking on send + Downloads dir resolution on receive.
+  file_picker: ^8.1.6
+  path_provider: ^2.1.5
+
+  # MIME sniffing for outgoing Content-Type header.
+  mime: ^2.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
