@@ -8,12 +8,12 @@ import 'package:sharer/data/security/hmac_verifier.dart';
 import 'package:sharer/data/security/paired_devices_store.dart';
 import 'package:sharer/data/transport/http_file_client.dart';
 import 'package:sharer/data/transport/http_file_server.dart';
-import 'package:sharer/domain/entities/device_identity.dart';
 import 'package:sharer/domain/entities/file_payload.dart';
 import 'package:sharer/domain/entities/paired_device.dart';
 
 import '../../fakes/fake_downloads_locator.dart';
 import '../../fakes/fake_secure_key_value_store.dart';
+import '../../fakes/test_identity.dart';
 
 Future<void> _settle() async {
   for (var i = 0; i < 5; i++) {
@@ -60,7 +60,7 @@ void main() {
         sizeBytes: bytes.length,
         bytes: Stream.fromIterable([bytes]),
       ),
-      sender: const DeviceIdentity(id: 'sender-id', name: 'Sender'),
+      sender: stubIdentity(id: 'sender-id', name: 'Sender'),
     );
 
     expect(result.bytesSent, bytes.length);
@@ -87,7 +87,7 @@ void main() {
         sizeBytes: total,
         bytes: Stream.fromIterable(chunks),
       ),
-      sender: const DeviceIdentity(id: 'sender-id', name: 'Sender'),
+      sender: stubIdentity(id: 'sender-id', name: 'Sender'),
       onProgress: reported.add,
     );
 
@@ -112,6 +112,7 @@ void main() {
       deviceId: 'sender-id',
       displayName: 'Sender',
       psk: psk,
+      publicKey: Uint8List.fromList(List<int>.generate(32, (i) => i)),
       pairedAt: DateTime.utc(2026, 5, 4),
     ));
 
@@ -135,7 +136,7 @@ void main() {
         sizeBytes: bytes.length,
         bytes: Stream.fromIterable([bytes]),
       ),
-      sender: const DeviceIdentity(id: 'sender-id', name: 'Sender'),
+      sender: stubIdentity(id: 'sender-id', name: 'Sender'),
       recipientPsk: psk,
     );
 
@@ -162,6 +163,7 @@ void main() {
       deviceId: 'sender-id',
       displayName: 'Sender',
       psk: realPsk,
+      publicKey: Uint8List.fromList(List<int>.generate(32, (i) => i)),
       pairedAt: DateTime.utc(2026, 5, 4),
     ));
 
@@ -186,7 +188,7 @@ void main() {
           sizeBytes: bytes.length,
           bytes: Stream.fromIterable([bytes]),
         ),
-        sender: const DeviceIdentity(id: 'sender-id', name: 'Sender'),
+        sender: stubIdentity(id: 'sender-id', name: 'Sender'),
         recipientPsk: wrongPsk,
       ),
       throwsA(isA<HttpException>()),
@@ -222,7 +224,7 @@ void main() {
           sizeBytes: 0,
           bytes: const Stream.empty(),
         ),
-        sender: const DeviceIdentity(id: 'sender-id', name: 'Sender'),
+        sender: stubIdentity(id: 'sender-id', name: 'Sender'),
       ),
       throwsA(isA<HttpException>()),
     );

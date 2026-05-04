@@ -23,6 +23,8 @@ void main() {
         deviceId: id,
         displayName: 'Peer',
         psk: psk(seed),
+        publicKey: Uint8List.fromList(
+            List<int>.generate(32, (i) => (200 + seed + i) & 0xff)),
         pairedAt: DateTime.utc(2026, 5, 4),
       );
 

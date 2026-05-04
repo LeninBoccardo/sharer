@@ -41,16 +41,36 @@ class _ScanPairState extends ConsumerState<ScanPairScreen> {
   }
 
   Future<void> _completePairing(PairingOffer offer) async {
-    final identity = await ref.read(deviceIdentityRepoProvider).get();
+    final identityRepo = ref.read(deviceIdentityRepoProvider);
+    final pairing = ref.read(pairingServiceProvider);
+
+    // Validate the offer's Ed25519 signature *before* signing anything
+    // ourselves. A tampered QR (e.g. captured + re-emitted by an
+    // attacker after mutating the endpoints) is rejected here without
+    // exposing our identity signature on the wire.
+    if (!await pairing.validateOffer(offer)) {
+      if (!mounted) return;
+      setState(() {
+        _processing = false;
+        _status = 'This pairing code did not check out — it may have been '
+            'tampered with. Generate a new one and try again.';
+      });
+      return;
+    }
+
+    final identity = await identityRepo.get();
     final client = ref.read(pairingClientProvider);
-    final result =
-        await client.postCompletion(offer: offer, responder: identity);
+    final result = await client.postCompletion(
+      offer: offer,
+      responder: identity,
+      identityRepo: identityRepo,
+    );
 
     if (!mounted) return;
 
     switch (result) {
       case PairingPostResult.ok:
-        await ref.read(pairingServiceProvider).acceptOffer(offer);
+        await pairing.acceptOffer(offer);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

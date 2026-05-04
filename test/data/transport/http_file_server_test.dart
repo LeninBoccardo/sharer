@@ -55,6 +55,7 @@ Future<_SignedFixture> _setupSigned({int seed = 7}) async {
     deviceId: 'sender-1',
     displayName: 'Sender',
     psk: _psk(seed),
+    publicKey: _stubPub(seed),
     pairedAt: DateTime.utc(2026, 5, 4),
   );
   await paired.add(peer);
@@ -127,6 +128,12 @@ Future<HttpClientResponse> _postUpload({
 
 Uint8List _psk(int seed) =>
     Uint8List.fromList(List<int>.generate(32, (i) => (seed + i) & 0xff));
+
+/// Stand-in 32-byte publicKey for tests that don't exercise Ed25519 —
+/// the upload path verifies HMAC against the PSK, not the public key,
+/// so this can be deterministic stub bytes.
+Uint8List _stubPub(int seed) => Uint8List.fromList(
+    List<int>.generate(32, (i) => (200 + seed + i) & 0xff));
 
 void main() {
   group('HttpFileServer — trust gating', () {
@@ -377,6 +384,7 @@ void main() {
         deviceId: 'realme',
         displayName: 'Realme',
         psk: _psk(7),
+        publicKey: _stubPub(7),
         pairedAt: DateTime.utc(2026, 5, 4),
       );
       await paired.add(peer);
@@ -449,6 +457,7 @@ void main() {
         deviceId: 'realme',
         displayName: 'Realme',
         psk: _psk(7),
+        publicKey: _stubPub(7),
         pairedAt: DateTime.utc(2026, 5, 4),
       );
       await paired.add(peer);
@@ -515,6 +524,7 @@ void main() {
         deviceId: 'realme',
         displayName: 'Realme',
         psk: _psk(7),
+        publicKey: _stubPub(7),
         pairedAt: DateTime.utc(2026, 5, 4),
       );
       await paired.add(peer);

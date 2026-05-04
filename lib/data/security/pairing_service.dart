@@ -11,6 +11,7 @@ import '../../domain/entities/paired_device.dart';
 import '../../domain/entities/pairing_offer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
 import '../../domain/repositories/paired_devices_repository.dart';
+import 'long_term_signer.dart';
 
 /// Canonical input to the /pair completion HMAC. Different from the
 /// transfer canonical (no timestamp / nonce / filename) because each
@@ -74,14 +75,31 @@ class PairingService {
           endpoints, 'endpoints', 'must contain at least one host:port');
     }
     final identity = await _identity.get();
+    final offerId = _uuid.v4();
+    final psk = _randomBytes(32);
+    final code = _randomNumericCode();
+    final expiresAt = _now().add(ttl);
+    final canonical = pairingOfferCanonicalBytes(
+      offerId: offerId,
+      psk: psk,
+      numericCode: code,
+      endpoints: endpoints,
+      initiatorId: identity.id,
+      initiatorName: identity.name,
+      initiatorPublicKey: identity.publicKey,
+      expiresAt: expiresAt,
+    );
+    final sigBytes = await _identity.sign(canonical);
     final offer = PairingOffer(
-      offerId: _uuid.v4(),
-      psk: _randomBytes(32),
-      numericCode: _randomNumericCode(),
+      offerId: offerId,
+      psk: psk,
+      numericCode: code,
       endpoints: List.unmodifiable(endpoints),
       initiatorId: identity.id,
       initiatorName: identity.name,
-      expiresAt: _now().add(ttl),
+      initiatorPublicKey: identity.publicKey,
+      signature: Uint8List.fromList(sigBytes),
+      expiresAt: expiresAt,
     );
     _activeOffers[offer.offerId] = offer;
     _log('createOffer id=${offer.offerId} code=${offer.numericCode} '
@@ -101,12 +119,21 @@ class PairingService {
   /// stored on success, or null on any failure (caller returns 401).
   /// Per spec we don't leak which check failed — log the reason locally
   /// for debugging but the caller's wire response is a bare 401.
+  ///
+  /// The responder must prove two things:
+  ///   1. They have the offer's ephemeral PSK (HMAC over the canonical
+  ///      string). This is cheap and ties the request to *this* offer.
+  ///   2. They are the device that owns [responderPublicKey] (Ed25519
+  ///      identity signature). Plus their claimed [responderId] hashes
+  ///      from that key — slice 4.5 makes deviceId unforgeable.
   Future<PairedDevice?> completePair({
     required String offerId,
     required String numericCode,
     required String responderId,
     required String responderName,
+    required Uint8List responderPublicKey,
     required String signature,
+    required String identitySignature,
   }) async {
     _purgeExpired();
     final offer = _activeOffers[offerId];
@@ -123,25 +150,54 @@ class PairingService {
       _log('completePair reject: code mismatch id=$offerId');
       return null;
     }
+    if (responderPublicKey.length != 32) {
+      _log('completePair reject: bad publicKey length id=$offerId');
+      return null;
+    }
+    final claimedFingerprint =
+        LongTermSigner.fingerprintOf(responderPublicKey);
+    if (claimedFingerprint != responderId) {
+      _log('completePair reject: deviceId/publicKey mismatch id=$offerId '
+          '(claimed=$responderId derived=$claimedFingerprint)');
+      return null;
+    }
     final canonical = pairingCanonicalString(
       offerId: offerId,
       responderId: responderId,
       numericCode: numericCode,
     );
-    final expected = Hmac(sha256, offer.psk).convert(utf8.encode(canonical));
-    final provided = _safeBase64Decode(signature);
-    if (provided == null) {
-      _log('completePair reject: malformed signature id=$offerId');
+    final canonicalBytes = utf8.encode(canonical);
+    // 1. PSK HMAC.
+    final expected = Hmac(sha256, offer.psk).convert(canonicalBytes);
+    final pskSig = _safeBase64Decode(signature);
+    if (pskSig == null) {
+      _log('completePair reject: malformed PSK signature id=$offerId');
       return null;
     }
-    if (!_constantTimeEquals(expected.bytes, provided)) {
-      _log('completePair reject: signature mismatch id=$offerId');
+    if (!_constantTimeEquals(expected.bytes, pskSig)) {
+      _log('completePair reject: PSK signature mismatch id=$offerId');
+      return null;
+    }
+    // 2. Ed25519 identity signature with the responder's public key.
+    final identitySigBytes = _safeBase64Decode(identitySignature);
+    if (identitySigBytes == null || identitySigBytes.length != 64) {
+      _log('completePair reject: malformed identity signature id=$offerId');
+      return null;
+    }
+    final identityOk = await LongTermSigner.verify(
+      message: canonicalBytes,
+      signature: identitySigBytes,
+      publicKey: responderPublicKey,
+    );
+    if (!identityOk) {
+      _log('completePair reject: identity signature mismatch id=$offerId');
       return null;
     }
     final paired = PairedDevice(
       deviceId: responderId,
       displayName: responderName,
       psk: offer.psk,
+      publicKey: responderPublicKey,
       pairedAt: _now(),
     );
     await _paired.add(paired);
@@ -151,13 +207,50 @@ class PairingService {
     return paired;
   }
 
-  /// Responder-side. Stores the initiator as paired once the HTTP POST
-  /// to the offer's endpoint has come back 200.
-  Future<PairedDevice> acceptOffer(PairingOffer offer) async {
+  /// Pure check — verifies the offer's claimed deviceId hashes from the
+  /// embedded publicKey AND the Ed25519 signature is valid. Side-effect
+  /// free; safe for the responder to call before sending anything over
+  /// the wire so a tampered offer is rejected without leaking signed
+  /// proofs about ourselves.
+  Future<bool> validateOffer(PairingOffer offer) async {
+    if (LongTermSigner.fingerprintOf(offer.initiatorPublicKey) !=
+        offer.initiatorId) {
+      _log('validateOffer reject: initiator deviceId/publicKey mismatch');
+      return false;
+    }
+    final canonical = pairingOfferCanonicalBytes(
+      offerId: offer.offerId,
+      psk: offer.psk,
+      numericCode: offer.numericCode,
+      endpoints: offer.endpoints,
+      initiatorId: offer.initiatorId,
+      initiatorName: offer.initiatorName,
+      initiatorPublicKey: offer.initiatorPublicKey,
+      expiresAt: offer.expiresAt,
+    );
+    final ok = await LongTermSigner.verify(
+      message: canonical,
+      signature: offer.signature,
+      publicKey: offer.initiatorPublicKey,
+    );
+    if (!ok) {
+      _log('validateOffer reject: offer signature mismatch');
+      return false;
+    }
+    return true;
+  }
+
+  /// Responder-side. Calls [validateOffer] and on success stores the
+  /// initiator as paired. Returns null if validation fails (caller
+  /// surfaces a single "pairing rejected" error) or the stored
+  /// [PairedDevice] on success.
+  Future<PairedDevice?> acceptOffer(PairingOffer offer) async {
+    if (!await validateOffer(offer)) return null;
     final paired = PairedDevice(
       deviceId: offer.initiatorId,
       displayName: offer.initiatorName,
       psk: offer.psk,
+      publicKey: offer.initiatorPublicKey,
       pairedAt: _now(),
     );
     await _paired.add(paired);

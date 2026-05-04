@@ -56,4 +56,15 @@ abstract final class TransportProtocol {
   /// The 6-digit numeric code from the same QR. Bound to the offer id;
   /// rejected if it doesn't match the offer's stored code.
   static const String headerPairCode = 'x-sharer-pair-code';
+
+  /// Slice 4.5: responder's long-term Ed25519 public key, base64. The
+  /// receiver pins this alongside the per-pair PSK, and verifies the
+  /// claimed [headerDeviceId] hashes from this key before storing.
+  static const String headerPublicKey = 'x-sharer-publickey';
+
+  /// Slice 4.5: Ed25519 signature over the same canonical string the
+  /// PSK HMAC covers, signed with the responder's long-term private
+  /// key. Proves "I am the device that owns [headerPublicKey]" alongside
+  /// the PSK proof of "I have the offer's ephemeral key."
+  static const String headerIdentitySignature = 'x-sharer-identity-sig';
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sharer/data/discovery/mdns_backend.dart';
@@ -15,10 +16,18 @@ class _StaticIdentityRepo implements DeviceIdentityRepository {
   final String name;
 
   @override
-  Future<DeviceIdentity> get() async => DeviceIdentity(id: id, name: name);
+  Future<DeviceIdentity> get() async => DeviceIdentity(
+        id: id,
+        name: name,
+        publicKey: Uint8List(32),
+      );
 
   @override
   Future<void> rename(String name) async => throw UnimplementedError();
+
+  @override
+  Future<List<int>> sign(List<int> message) async =>
+      throw UnimplementedError('mdns tests do not exercise Ed25519 signing');
 }
 
 /// Pumps the microtask + small timer queue so async listeners and the

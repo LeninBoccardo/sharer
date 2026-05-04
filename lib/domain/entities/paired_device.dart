@@ -11,6 +11,13 @@ class PairedDevice {
   final String deviceId;
   final String displayName;
   final Uint8List psk;
+
+  /// Peer's long-term Ed25519 public key, raw 32 bytes (slice 4.5).
+  /// Pinned at pair time. Used to verify identity-bearing signatures
+  /// from this peer on subsequent operations (currently the pair-
+  /// completion handshake; future LAN-invite re-pair, etc.).
+  final Uint8List publicKey;
+
   final String? certFingerprint;
   final DateTime pairedAt;
 
@@ -18,13 +25,16 @@ class PairedDevice {
     required this.deviceId,
     required this.displayName,
     required this.psk,
+    required this.publicKey,
     required this.pairedAt,
     this.certFingerprint,
-  }) : assert(psk.length == 32, 'PSK must be 32 bytes (256 bits)');
+  })  : assert(psk.length == 32, 'PSK must be 32 bytes (256 bits)'),
+        assert(publicKey.length == 32, 'publicKey must be 32 bytes');
 
   PairedDevice copyWith({
     String? displayName,
     Uint8List? psk,
+    Uint8List? publicKey,
     String? certFingerprint,
     DateTime? pairedAt,
   }) {
@@ -32,6 +42,7 @@ class PairedDevice {
       deviceId: deviceId,
       displayName: displayName ?? this.displayName,
       psk: psk ?? this.psk,
+      publicKey: publicKey ?? this.publicKey,
       certFingerprint: certFingerprint ?? this.certFingerprint,
       pairedAt: pairedAt ?? this.pairedAt,
     );
@@ -49,6 +60,10 @@ class PairedDevice {
     for (var i = 0; i < psk.length; i++) {
       if (psk[i] != other.psk[i]) return false;
     }
+    if (publicKey.length != other.publicKey.length) return false;
+    for (var i = 0; i < publicKey.length; i++) {
+      if (publicKey[i] != other.publicKey[i]) return false;
+    }
     return true;
   }
 
@@ -59,5 +74,6 @@ class PairedDevice {
         certFingerprint,
         pairedAt,
         Object.hashAll(psk),
+        Object.hashAll(publicKey),
       );
 }

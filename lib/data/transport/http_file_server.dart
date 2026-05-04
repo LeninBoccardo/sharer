@@ -271,6 +271,8 @@ class HttpFileServer {
     final offerId = headers[TransportProtocol.headerPairOfferId];
     final code = headers[TransportProtocol.headerPairCode];
     final signature = headers[TransportProtocol.headerSignature];
+    final publicKeyB64 = headers[TransportProtocol.headerPublicKey];
+    final identitySig = headers[TransportProtocol.headerIdentitySignature];
 
     if (responderId == null ||
         responderId.isEmpty ||
@@ -279,8 +281,21 @@ class HttpFileServer {
         code == null ||
         code.isEmpty ||
         signature == null ||
-        signature.isEmpty) {
+        signature.isEmpty ||
+        publicKeyB64 == null ||
+        publicKeyB64.isEmpty ||
+        identitySig == null ||
+        identitySig.isEmpty) {
       _log('Reject pair: missing required headers');
+      await request.read().drain<void>();
+      return Response.unauthorized('');
+    }
+
+    Uint8List publicKey;
+    try {
+      publicKey = Uint8List.fromList(base64Decode(publicKeyB64));
+    } catch (_) {
+      _log('Reject pair: malformed publicKey base64');
       await request.read().drain<void>();
       return Response.unauthorized('');
     }
@@ -290,7 +305,9 @@ class HttpFileServer {
       numericCode: code,
       responderId: responderId,
       responderName: responderName,
+      responderPublicKey: publicKey,
       signature: signature,
+      identitySignature: identitySig,
     );
     await request.read().drain<void>();
     if (paired == null) return Response.unauthorized('');

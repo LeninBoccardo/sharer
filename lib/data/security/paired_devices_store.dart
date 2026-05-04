@@ -112,6 +112,7 @@ class PairedDevicesStore implements PairedDevicesRepository {
         'deviceId': d.deviceId,
         'displayName': d.displayName,
         'psk': base64Encode(d.psk),
+        'publicKey': base64Encode(d.publicKey),
         if (d.certFingerprint != null) 'certFingerprint': d.certFingerprint,
         'pairedAt': d.pairedAt.toUtc().toIso8601String(),
       };
@@ -120,6 +121,8 @@ class PairedDevicesStore implements PairedDevicesRepository {
         deviceId: j['deviceId'] as String,
         displayName: j['displayName'] as String,
         psk: Uint8List.fromList(base64Decode(j['psk'] as String)),
+        publicKey:
+            Uint8List.fromList(base64Decode(j['publicKey'] as String)),
         certFingerprint: j['certFingerprint'] as String?,
         pairedAt: DateTime.parse(j['pairedAt'] as String),
       );

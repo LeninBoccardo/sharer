@@ -57,6 +57,12 @@ dependencies:
   # HMAC-SHA256 for the X-Sharer-Sig request authentication header.
   crypto: ^3.0.6
 
+  # Ed25519 long-term identity (slice 4.5), X25519 + HKDF for the LAN
+  # pair-invite handshake (slice 4.6), AES-256-GCM for end-to-end chunk
+  # encryption (slice 5.3). Pure-Dart implementation; cryptography_flutter
+  # for hardware acceleration is a future polish if profiling shows it.
+  cryptography: ^2.7.0
+
   # Pairing UI: render the QR offer on the initiator, scan it on the
   # responder. mobile_scanner is camera-based; on desktops without a
   # camera we fall back to the typed-code entry.

@@ -7,6 +7,9 @@ void main() {
   Uint8List psk(int seed) =>
       Uint8List.fromList(List<int>.generate(32, (i) => (seed + i) & 0xff));
 
+  Uint8List pub(int seed) =>
+      Uint8List.fromList(List<int>.generate(32, (i) => (100 + seed + i) & 0xff));
+
   PairedDevice make({
     String deviceId = 'a',
     String displayName = 'Phone',
@@ -18,6 +21,7 @@ void main() {
         deviceId: deviceId,
         displayName: displayName,
         psk: psk(seed),
+        publicKey: pub(seed),
         certFingerprint: certFingerprint,
         pairedAt: pairedAt ?? DateTime.utc(2026, 5, 4, 10),
       );
@@ -28,6 +32,20 @@ void main() {
         deviceId: 'a',
         displayName: 'x',
         psk: Uint8List(16),
+        publicKey: Uint8List(32),
+        pairedAt: DateTime.utc(2026, 5, 4),
+      ),
+      throwsA(isA<AssertionError>()),
+    );
+  });
+
+  test('rejects publicKey that is not exactly 32 bytes', () {
+    expect(
+      () => PairedDevice(
+        deviceId: 'a',
+        displayName: 'x',
+        psk: Uint8List(32),
+        publicKey: Uint8List(16),
         pairedAt: DateTime.utc(2026, 5, 4),
       ),
       throwsA(isA<AssertionError>()),

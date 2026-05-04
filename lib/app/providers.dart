@@ -52,7 +52,17 @@ final defaultDeviceNameResolverProvider =
 final deviceIdentityRepoProvider = Provider<DeviceIdentityRepository>((ref) {
   return DeviceIdentityStore(
     ref.watch(sharedPreferencesProvider),
+    secure: ref.watch(secureKeyValueStoreProvider),
     defaultName: ref.watch(defaultDeviceNameResolverProvider),
+    onMigrationReset: () async {
+      // Migrating from the slice 4.1–4.4 UUID identity wipes paired
+      // devices — every entry was bound to the old deviceId/PSK that
+      // no longer matches anything (per OQ-12 / slice 4.5 plan).
+      final paired = ref.read(pairedDevicesRepoProvider);
+      for (final d in await paired.getAll()) {
+        await paired.remove(d.deviceId);
+      }
+    },
   );
 });
 

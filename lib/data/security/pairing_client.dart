@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/device_identity.dart';
 import '../../domain/entities/pairing_offer.dart';
+import '../../domain/repositories/device_identity_repository.dart';
 import '../transport/transport_protocol.dart';
 import 'pairing_service.dart';
 
@@ -52,6 +53,7 @@ class PairingClient {
   Future<PairingPostResult> postCompletion({
     required PairingOffer offer,
     required DeviceIdentity responder,
+    required DeviceIdentityRepository identityRepo,
     Duration perEndpointTimeout = _defaultPerEndpointTimeout,
   }) async {
     if (offer.endpoints.isEmpty) {
@@ -62,8 +64,11 @@ class PairingClient {
       responderId: responder.id,
       numericCode: offer.numericCode,
     );
-    final mac = Hmac(sha256, offer.psk).convert(utf8.encode(canonical));
+    final canonicalBytes = utf8.encode(canonical);
+    final mac = Hmac(sha256, offer.psk).convert(canonicalBytes);
     final sig = base64Encode(mac.bytes);
+    final identitySig = base64Encode(await identityRepo.sign(canonicalBytes));
+    final pubKey = base64Encode(responder.publicKey);
 
     var sawNetworkError = false;
     var sawMalformed = false;
@@ -88,6 +93,9 @@ class PairingClient {
         req.headers.set(TransportProtocol.headerPairOfferId, offer.offerId);
         req.headers.set(TransportProtocol.headerPairCode, offer.numericCode);
         req.headers.set(TransportProtocol.headerSignature, sig);
+        req.headers.set(TransportProtocol.headerPublicKey, pubKey);
+        req.headers
+            .set(TransportProtocol.headerIdentitySignature, identitySig);
         final resp = await req.close().timeout(perEndpointTimeout);
         await resp.drain<void>();
         _log('response ${resp.statusCode} from $endpoint');

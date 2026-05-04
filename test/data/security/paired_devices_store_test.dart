@@ -31,6 +31,8 @@ void main() {
         deviceId: deviceId,
         displayName: displayName,
         psk: psk(seed),
+        publicKey: Uint8List.fromList(
+            List<int>.generate(32, (i) => (200 + seed + i) & 0xff)),
         certFingerprint: certFingerprint,
         pairedAt: pairedAt ?? DateTime.utc(2026, 5, 4, 10),
       );
@@ -110,8 +112,9 @@ void main() {
   test('corrupt entries are dropped from disk on load', () async {
     // 32 zero bytes encoded as base64 → 43 'A's + '=' padding.
     const validPsk = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+    const validPub = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
     await secure.write('paired_device:legit',
-        '{"deviceId":"legit","displayName":"Legit","psk":"$validPsk","pairedAt":"2026-05-04T10:00:00.000Z"}');
+        '{"deviceId":"legit","displayName":"Legit","psk":"$validPsk","publicKey":"$validPub","pairedAt":"2026-05-04T10:00:00.000Z"}');
     await secure.write('paired_device:broken', '{not valid json');
     await secure.write('something_else', 'untouched');
 
