@@ -35,7 +35,12 @@ class HomeScreen extends ConsumerWidget {
         ],
       ),
       body: SafeArea(
-        child: Padding(
+        // Single scrollable column: peer area and transfers compete for
+        // height inside an Expanded otherwise (caused a 7.7px overflow on
+        // small screens once the Transfers section started rendering).
+        // Now growth in either pushes content down rather than getting
+        // squeezed.
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -43,15 +48,17 @@ class HomeScreen extends ConsumerWidget {
               const QuietModeBanner(),
               Text('Nearby devices', style: theme.textTheme.titleLarge),
               const SizedBox(height: 12),
-              Expanded(
-                child: peersAsync.when(
-                  loading: () =>
-                      const Center(child: CircularProgressIndicator()),
-                  error: (e, _) => Center(child: Text('Error: $e')),
-                  data: (peers) => peers.isEmpty
-                      ? const _EmptyState()
-                      : _PeerList(peers: peers),
+              peersAsync.when(
+                loading: () => const SizedBox(
+                  height: 120,
+                  child: Center(child: CircularProgressIndicator()),
                 ),
+                error: (e, _) => SizedBox(
+                  height: 120,
+                  child: Center(child: Text('Error: $e')),
+                ),
+                data: (peers) =>
+                    peers.isEmpty ? const _EmptyState() : _PeerList(peers: peers),
               ),
               const TransfersSection(),
             ],
@@ -68,7 +75,8 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Center(
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -95,10 +103,15 @@ class _PeerList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.separated(
-      itemCount: peers.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (_, i) => _PeerTile(peer: peers[i]),
+    // Render inline so the parent SingleChildScrollView owns the scroll;
+    // a nested ListView here would conflict.
+    return Column(
+      children: [
+        for (var i = 0; i < peers.length; i++) ...[
+          if (i > 0) const SizedBox(height: 8),
+          _PeerTile(peer: peers[i]),
+        ],
+      ],
     );
   }
 }
