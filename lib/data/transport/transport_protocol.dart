@@ -16,10 +16,26 @@ abstract final class TransportProtocol {
   /// progress total. Receiver streams until the body ends regardless.
   static const String headerFileSize = 'x-sharer-filesize';
 
-  /// Sender's stable device id (UUID). Slice 4 will replace this with
-  /// an HMAC-signed token; for now it's an unauthenticated label.
+  /// Sender's stable device id (UUID). On signed requests this is also
+  /// the lookup key for the receiver's PSK.
   static const String headerDeviceId = 'x-sharer-deviceid';
 
   /// URL-encoded human-readable device name from the sender.
   static const String headerDeviceName = 'x-sharer-devicename';
+
+  // ---- Slice 4.2: HMAC authentication. ----
+  // All three are required as a set; if any is present, the others must
+  // be too. Signed values cover the request manifest (method, path,
+  // sender, filename, size). See HmacSigner.canonicalString.
+
+  /// Sender's clock at request time, in unix milliseconds (UTC).
+  static const String headerTimestamp = 'x-sharer-timestamp';
+
+  /// Random 128-bit nonce, base64-encoded. Receiver dedupes within the
+  /// nonce TTL window to defeat replay.
+  static const String headerNonce = 'x-sharer-nonce';
+
+  /// Base64 HMAC-SHA256 over the canonical string built from the other
+  /// fields, using the receiver's per-pair PSK.
+  static const String headerSignature = 'x-sharer-sig';
 }

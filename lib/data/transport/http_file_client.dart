@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/device_identity.dart';
 import '../../domain/entities/file_payload.dart';
+import '../security/hmac_signer.dart';
 import 'transport_protocol.dart';
 
 /// Result of a successful upload — what the receiver wrote.
@@ -22,10 +23,18 @@ class HttpFileClient {
   static const _logName = 'sharer.transport.client';
 
   final HttpClient _http;
+  final HmacSigner _signer;
 
-  HttpFileClient({HttpClient? httpClient}) : _http = httpClient ?? HttpClient();
+  HttpFileClient({HttpClient? httpClient, HmacSigner? signer})
+      : _http = httpClient ?? HttpClient(),
+        _signer = signer ?? HmacSigner();
 
   /// Streams [file] to `http://[host]:[port][TransportProtocol.uploadPath]`.
+  ///
+  /// When [recipientPsk] is non-null, the request is signed with X-Sharer-
+  /// Timestamp / Nonce / Sig headers so a paired peer can authenticate it.
+  /// When null, the request is unsigned — slice 4.2 servers fall back to
+  /// the trust-network gate; later slices may reject outright.
   ///
   /// [onProgress] is invoked with cumulative bytes sent. Callers can
   /// throttle their UI updates if they want — no rate limiting here.
@@ -34,11 +43,13 @@ class HttpFileClient {
     required int port,
     required FilePayload file,
     required DeviceIdentity sender,
+    Uint8List? recipientPsk,
     void Function(int bytesSent)? onProgress,
   }) async {
     final uri =
         Uri.parse('http://$host:$port${TransportProtocol.uploadPath}');
-    _log('POST $uri  file=${file.fileName} size=${file.sizeBytes}');
+    _log('POST $uri  file=${file.fileName} size=${file.sizeBytes}'
+        ' signed=${recipientPsk != null}');
 
     final request = await _http.postUrl(uri);
     request.headers.contentType = ContentType.parse(
@@ -58,6 +69,21 @@ class HttpFileClient {
       TransportProtocol.headerDeviceName,
       Uri.encodeComponent(sender.name),
     );
+
+    if (recipientPsk != null) {
+      final signed = _signer.sign(
+        psk: recipientPsk,
+        method: 'POST',
+        path: TransportProtocol.uploadPath,
+        senderDeviceId: sender.id,
+        filename: file.fileName,
+        filesize: file.sizeBytes,
+      );
+      request.headers
+          .set(TransportProtocol.headerTimestamp, signed.timestamp);
+      request.headers.set(TransportProtocol.headerNonce, signed.nonce);
+      request.headers.set(TransportProtocol.headerSignature, signed.signature);
+    }
 
     var bytesSent = 0;
     final tracked = file.bytes.map((chunk) {

@@ -9,6 +9,7 @@ import '../data/identity/platform_device_name.dart';
 import '../data/network/network_source.dart';
 import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
+import '../data/security/hmac_verifier.dart';
 import '../data/security/paired_devices_store.dart';
 import '../data/security/secure_key_value_store.dart';
 import '../data/storage/downloads_locator.dart';
@@ -110,6 +111,12 @@ final pairedDevicesStreamProvider = StreamProvider<List<PairedDevice>>((ref) {
   return ref.watch(pairedDevicesRepoProvider).watch();
 });
 
+/// Server-side HMAC validator. The same instance is used for the whole
+/// app lifetime so its replay-buffer state survives across requests.
+final hmacVerifierProvider = Provider<HmacVerifier>((ref) {
+  return HmacVerifier(ref.watch(pairedDevicesRepoProvider));
+});
+
 /// Production mDNS backend. Override with FakeMdnsBackend in tests so
 /// nothing touches real platform sockets.
 final mdnsBackendProvider = Provider<MdnsBackend>((ref) {
@@ -143,13 +150,15 @@ final downloadsLocatorProvider = Provider<DownloadsLocator>((ref) {
   return PlatformDownloadsLocator();
 });
 
-/// HTTP server gated on trust. Runs only when on a trusted network so
-/// that — until pairing+HMAC arrive in slice 4 — only people on a
-/// network the user has explicitly trusted can push files to us.
+/// HTTP server gated on trust. Runs only when on a trusted network. With
+/// slice 4.2 the server also validates X-Sharer-Sig on every upload that
+/// carries one — paired peers are gated by HMAC, unsigned uploads still
+/// fall through to the trust-network gate (slice 4.3 will tighten this).
 final httpFileServerProvider = Provider<HttpFileServer>((ref) {
   final server = HttpFileServer(
     downloads: ref.watch(downloadsLocatorProvider),
     isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
+    verifier: ref.watch(hmacVerifierProvider),
   );
   ref.onDispose(server.dispose);
   server.start();
@@ -167,6 +176,7 @@ final transferServiceProvider = Provider<TransferService>((ref) {
     client: ref.watch(httpFileClientProvider),
     server: ref.watch(httpFileServerProvider),
     identityRepo: ref.watch(deviceIdentityRepoProvider),
+    pairedRepo: ref.watch(pairedDevicesRepoProvider),
   );
   ref.onDispose(svc.dispose);
   return svc;

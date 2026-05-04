@@ -1,14 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sharer/data/security/hmac_verifier.dart';
+import 'package:sharer/data/security/paired_devices_store.dart';
 import 'package:sharer/data/transport/http_file_client.dart';
 import 'package:sharer/data/transport/http_file_server.dart';
 import 'package:sharer/domain/entities/device_identity.dart';
 import 'package:sharer/domain/entities/file_payload.dart';
+import 'package:sharer/domain/entities/paired_device.dart';
 
 import '../../fakes/fake_downloads_locator.dart';
+import '../../fakes/fake_secure_key_value_store.dart';
 
 Future<void> _settle() async {
   for (var i = 0; i < 5; i++) {
@@ -87,6 +92,105 @@ void main() {
     );
 
     expect(reported, [1000, 3000, 3500]);
+  });
+
+  test('signed upload round-trips through a real verifier', () async {
+    // Tear down the unsigned-only setUp server and bring up one that
+    // shares a verifier+repo with this test.
+    client.close();
+    await server.dispose();
+    await trust.close();
+
+    trust = StreamController<bool>.broadcast();
+    final secure = FakeSecureKeyValueStore();
+    final paired = PairedDevicesStore(secure);
+    addTearDown(paired.dispose);
+
+    final psk =
+        Uint8List.fromList(List<int>.generate(32, (i) => (3 + i) & 0xff));
+    await paired.add(PairedDevice(
+      deviceId: 'sender-id',
+      displayName: 'Sender',
+      psk: psk,
+      pairedAt: DateTime.utc(2026, 5, 4),
+    ));
+
+    server = HttpFileServer(
+      downloads: FakeDownloadsLocator(tmpDir),
+      isTrusted: trust.stream,
+      verifier: HmacVerifier(paired),
+      port: 0,
+    );
+    client = HttpFileClient();
+    await server.start();
+    trust.add(true);
+    await _settle();
+
+    final bytes = utf8.encode('signed bytes');
+    final result = await client.upload(
+      host: '127.0.0.1',
+      port: server.boundPort!,
+      file: FilePayload(
+        fileName: 'signed.txt',
+        sizeBytes: bytes.length,
+        bytes: Stream.fromIterable([bytes]),
+      ),
+      sender: const DeviceIdentity(id: 'sender-id', name: 'Sender'),
+      recipientPsk: psk,
+    );
+
+    expect(result.bytesSent, bytes.length);
+    expect(result.savedPath, endsWith('signed.txt'));
+  });
+
+  test('signed upload with the wrong PSK is rejected by the server',
+      () async {
+    client.close();
+    await server.dispose();
+    await trust.close();
+
+    trust = StreamController<bool>.broadcast();
+    final secure = FakeSecureKeyValueStore();
+    final paired = PairedDevicesStore(secure);
+    addTearDown(paired.dispose);
+
+    final realPsk =
+        Uint8List.fromList(List<int>.generate(32, (i) => (3 + i) & 0xff));
+    final wrongPsk =
+        Uint8List.fromList(List<int>.generate(32, (i) => (9 + i) & 0xff));
+    await paired.add(PairedDevice(
+      deviceId: 'sender-id',
+      displayName: 'Sender',
+      psk: realPsk,
+      pairedAt: DateTime.utc(2026, 5, 4),
+    ));
+
+    server = HttpFileServer(
+      downloads: FakeDownloadsLocator(tmpDir),
+      isTrusted: trust.stream,
+      verifier: HmacVerifier(paired),
+      port: 0,
+    );
+    client = HttpFileClient();
+    await server.start();
+    trust.add(true);
+    await _settle();
+
+    final bytes = utf8.encode('intercepted');
+    expect(
+      () => client.upload(
+        host: '127.0.0.1',
+        port: server.boundPort!,
+        file: FilePayload(
+          fileName: 'attempt.txt',
+          sizeBytes: bytes.length,
+          bytes: Stream.fromIterable([bytes]),
+        ),
+        sender: const DeviceIdentity(id: 'sender-id', name: 'Sender'),
+        recipientPsk: wrongPsk,
+      ),
+      throwsA(isA<HttpException>()),
+    );
   });
 
   test('throws on non-2xx response (server-side rejection)', () async {

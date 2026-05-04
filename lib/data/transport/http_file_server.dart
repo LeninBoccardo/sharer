@@ -9,6 +9,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:uuid/uuid.dart';
 
+import '../security/hmac_verifier.dart';
 import '../storage/downloads_locator.dart';
 import 'incoming_event.dart';
 import 'transport_protocol.dart';
@@ -26,6 +27,7 @@ class HttpFileServer {
 
   final DownloadsLocator _downloads;
   final Stream<bool> _isTrusted;
+  final HmacVerifier? _verifier;
   final int _port;
   final Uuid _uuid;
 
@@ -41,10 +43,12 @@ class HttpFileServer {
   HttpFileServer({
     required DownloadsLocator downloads,
     required Stream<bool> isTrusted,
+    HmacVerifier? verifier,
     int port = TransportProtocol.defaultPort,
     Uuid? uuid,
   })  : _downloads = downloads,
         _isTrusted = isTrusted,
+        _verifier = verifier,
         _port = port,
         _uuid = uuid ?? const Uuid();
 
@@ -159,6 +163,34 @@ class HttpFileServer {
       return Response.badRequest(
         body: 'missing or empty ${TransportProtocol.headerFileName}',
       );
+    }
+
+    // HMAC gate. Verifier returns Authenticated / Unsigned / Rejected.
+    // Slice 4.2 policy: Authenticated → accept; Unsigned → fall through
+    // to the existing trust-network gate that already gated server bind;
+    // Rejected → 401, drain body so the connection isn't reset abruptly.
+    // Per spec we don't echo the rejection reason on the wire.
+    final verifier = _verifier;
+    if (verifier != null) {
+      final outcome = await verifier.verify(
+        method: 'POST',
+        path: TransportProtocol.uploadPath,
+        senderDeviceId: senderId,
+        timestamp: headers[TransportProtocol.headerTimestamp],
+        nonce: headers[TransportProtocol.headerNonce],
+        signature: headers[TransportProtocol.headerSignature],
+        filename: fileName,
+        filesize: totalBytes,
+      );
+      switch (outcome) {
+        case HmacAuthenticated():
+        case HmacUnsigned():
+          break;
+        case HmacRejected(:final reason):
+          _log('Reject upload from $senderId ($senderName): $reason');
+          await request.read().drain<void>();
+          return Response.unauthorized('');
+      }
     }
 
     final id = _uuid.v4();

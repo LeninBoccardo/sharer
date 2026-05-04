@@ -9,6 +9,7 @@ import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/peer.dart';
 import '../../domain/entities/transfer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
+import '../../domain/repositories/paired_devices_repository.dart';
 import '../../domain/repositories/transfer_service.dart';
 import 'http_file_client.dart';
 import 'http_file_server.dart';
@@ -24,6 +25,7 @@ class TransferServiceImpl implements TransferService {
   final HttpFileClient _client;
   final HttpFileServer _server;
   final DeviceIdentityRepository _identityRepo;
+  final PairedDevicesRepository _pairedRepo;
   final Uuid _uuid;
 
   /// Insertion-ordered map; iteration is most-recently-added first when
@@ -37,10 +39,12 @@ class TransferServiceImpl implements TransferService {
     required HttpFileClient client,
     required HttpFileServer server,
     required DeviceIdentityRepository identityRepo,
+    required PairedDevicesRepository pairedRepo,
     Uuid? uuid,
   })  : _client = client,
         _server = server,
         _identityRepo = identityRepo,
+        _pairedRepo = pairedRepo,
         _uuid = uuid ?? const Uuid() {
     _incomingSub = _server.events.listen(_onIncoming);
   }
@@ -60,6 +64,10 @@ class TransferServiceImpl implements TransferService {
       throw StateError('Peer ${peer.id} is not reachable (no host/port).');
     }
     final identity = await _identityRepo.get();
+    // Sign the upload when we have a PSK for this peer. Unpaired sends
+    // (slice 4.2 fallback) go out unsigned and the receiver leans on the
+    // trust-network gate.
+    final paired = await _pairedRepo.get(peer.id);
     final transfer = Transfer(
       id: _uuid.v4(),
       peerId: peer.id,
@@ -75,7 +83,7 @@ class TransferServiceImpl implements TransferService {
     // Fire-and-forget the actual upload; progress + completion arrive
     // via the watchAll stream so the caller's Future resolving immediately
     // doesn't block the UI.
-    unawaited(_runUpload(transfer, peer, file, identity));
+    unawaited(_runUpload(transfer, peer, file, identity, paired?.psk));
     return transfer;
   }
 
@@ -84,6 +92,7 @@ class TransferServiceImpl implements TransferService {
     Peer peer,
     FilePayload file,
     DeviceIdentity sender,
+    Uint8List? recipientPsk,
   ) async {
     try {
       final result = await _client.upload(
@@ -91,6 +100,7 @@ class TransferServiceImpl implements TransferService {
         port: peer.port!,
         file: file,
         sender: sender,
+        recipientPsk: recipientPsk,
         onProgress: (bytes) {
           final current = _byId[initial.id];
           if (current == null) return;
