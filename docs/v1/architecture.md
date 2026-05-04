@@ -25,10 +25,31 @@ Each subsystem is a separately testable module behind a `domain` interface.
 | --- | --- | --- |
 | HTTP server (shelf) | Always on (any network) | Streams uploads to disk; never buffers full files. Port 8080 default, fall back if taken. Authenticated by HMAC + cert pinning, so it's safe to leave running on unfamiliar networks. |
 | HTTP client | On demand | Streams from disk. Uses connection pooling for chunked transfers. |
-| mDNS announcer (`_sharer._tcp`) | **Trusted networks only.** | Implemented with `bonsoir` (chosen over Flutter's `multicast_dns` because that package is discovery-only). **Suppressed entirely on unrecognized networks** (quiet mode). |
-| mDNS listener | **Trusted networks only** (until pairing lands) | Implemented with `bonsoir`. Maintains in-memory peer list keyed by `deviceId` (advertised in TXT). On untrusted networks the listener is fully torn down and the peer list cleared. **Once pairing exists (slice 4), the listener will stay active on untrusted networks too**, but UI will filter to paired peers only — so paired devices remain reachable on any Wi-Fi while strangers stay invisible. Until then, full silence on untrusted is the correct default. |
+| mDNS announcer (`_sharer._tcp`) | **Trusted networks only.** | Implemented behind the [`MdnsBackend`](../../lib/data/discovery/mdns_backend.dart) interface (production: bonsoir; test: `FakeMdnsBackend`). Service name is **session-unique** (`sharer-<random>`) to avoid the platform NSD layer auto-renaming on local-cache collision (the "(2)" issue). Display name lives in the `name` TXT attribute. |
+| mDNS listener | **Trusted networks only** (until pairing lands) | Same backend as the announcer. Maintains in-memory peer list keyed by `deviceId` (advertised in TXT). On untrusted networks the listener is fully torn down and the peer list cleared. **Once pairing exists (slice 4), the listener will stay active on untrusted networks too**, but UI will filter to paired peers only — so paired devices remain reachable on any Wi-Fi while strangers stay invisible. Until then, full silence on untrusted is the correct default. |
 | Network watcher | Always on | Polls SSID + subnet every ~5 s. On unrecognized network, sets the announcer to quiet mode and surfaces a banner. **Does not stop the server.** Trust boundary is pairing, not network — see [security.md](security.md). |
 | Peer cache | Persistent | Last-known peer IP + cert fingerprint per paired device, used for optimistic connect. Survives across networks so paired peers can be reached even when neither side is announcing. |
+
+## Discovery orchestrator — strong rules
+
+The mDNS orchestrator ([`MdnsPeerDiscovery`](../../lib/data/discovery/mdns_peer_discovery.dart)) follows these rules. They are enforced by the unit-test suite at [`test/data/discovery/mdns_peer_discovery_test.dart`](../../test/data/discovery/mdns_peer_discovery_test.dart) — any change here must keep them green.
+
+1. **Discovery and broadcast are atomic with trust state.** When the network is trusted, both run; when it is not, neither runs. There is no partial state.
+2. **Trust transitions are serialized via a desired-state reconciler.** Concurrent emissions on the trust stream cannot overlap their effects. The latest desired state always wins; intermediate states are coalesced. (Without this, an `_enable()` racing with an `_disable()` could leave discovery running on an untrusted network — observed pre-2.5 on real devices.)
+3. **Peer list is cleared on untrust.** A peer that was visible on a trusted network must not linger after the user untrusts. Stale peer state is a security smell.
+4. **Self is filtered by `deviceId` TXT attribute, not by mDNS service name.** The platform NSD layer auto-renames services on local collision (the "(2)" suffix). `deviceId` is stable per install.
+5. **mDNS service names are session-unique** (`sharer-<random>`). A new random suffix on every broadcast prevents NSD renaming on the local cache. The user-visible name lives in the `name` TXT attribute and is read on the consumer side from there, falling back to the mDNS name.
+6. **Subscribe before start.** Enforced inside [`BonsoirMdnsBackend.observe`](../../lib/data/discovery/bonsoir_mdns_backend.dart) — bonsoir's event stream drops anything emitted before listen attaches. Caught the hard way in slice 2.3.
+
+### Bonsoir caveats absorbed by the backend wrapper
+
+`bonsoir` is the most maintained Flutter mDNS package but has known quirks that the backend deliberately isolates:
+
+- **TXT-record race on Android NSD** — late TXT updates can fire spurious `lost` + `found` event pairs with mismatched attributes. We dedupe by `deviceId` and tolerate the churn.
+- **Non-platform-thread channel warning on Windows** — cosmetic; not actionable from our side.
+- **Auto-rename on collision** — bonsoir does not suppress the platform behavior. We sidestep it with session-unique mDNS names (rule 5).
+
+If bonsoir ever becomes unsuitable, swapping it out means writing a new `MdnsBackend` impl. Production code does not import `package:bonsoir` directly outside that file.
 
 ## Hot path: share flow
 

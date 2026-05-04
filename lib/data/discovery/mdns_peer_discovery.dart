@@ -1,41 +1,55 @@
 import 'dart:async';
 import 'dart:developer' as developer;
+import 'dart:math';
 
-import 'package:bonsoir/bonsoir.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/peer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
 import '../../domain/repositories/peer_discovery_repository.dart';
+import 'mdns_backend.dart';
 
-/// Discovery + announcement over mDNS / DNS-SD using bonsoir.
+/// Trust-gated peer discovery + announcement orchestration.
 ///
-/// Both discovery and announcement are gated by [isTrusted]: when it emits
-/// `true` we publish ourselves AND start listening for `_sharer._tcp`
-/// peers; when `false` (untrusted network), we tear both down and clear
-/// the peer list. See docs/v1/security.md.
+/// ## Strong rules
 ///
-/// Future (slice 4 — pairing): on untrusted networks we'll keep a thin
-/// listener active so paired peers can still be discovered, but filter
-/// out unpaired services. Until pairing exists, full silence is the
-/// correct behavior — an "always-on listener" leaks discovery to any
-/// network the device joins.
+/// 1. **Discovery and broadcast are atomic with trust state.** When the
+///    network is trusted both run; when it's not, neither runs. There is
+///    no in-between state.
+/// 2. **Trust transitions are serialized.** Concurrent calls into
+///    [_onTrustChange] cannot overlap. The latest desired state always
+///    wins; intermediate states converge.
+/// 3. **Peer list is cleared on untrust.** A peer that was visible on a
+///    trusted network must not linger after the user untrusts. Stale
+///    state is a security smell.
+/// 4. **Self is filtered by deviceId, not by service name.** The bonsoir
+///    NSD layer can auto-rename services on collision (the "(2)" suffix
+///    you saw); deviceId is stable.
+/// 5. **Service names are session-unique.** A new random suffix every
+///    broadcast prevents NSD from renaming on local cache collisions.
+///    The human-readable name lives in the `name` TXT attribute.
+/// 6. **Subscribe before start.** Enforced inside [BonsoirMdnsBackend] —
+///    bonsoir's broadcast event stream drops anything emitted before
+///    listen attaches.
 class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   static const serviceType = '_sharer._tcp';
   static const _kDeviceIdAttr = 'deviceId';
+  static const _kNameAttr = 'name';
   static const _logName = 'sharer.discovery';
 
   /// Port we will eventually run the HTTP server on. Slice 3 will start the
   /// server here; until then this is the advertised endpoint only.
   static const advertisedPort = 8080;
 
+  final MdnsBackend _backend;
   final DeviceIdentityRepository _identityRepo;
   final Stream<bool> _isTrusted;
+  final Random _random;
 
-  BonsoirBroadcast? _broadcast;
-  BonsoirDiscovery? _discovery;
-  StreamSubscription<BonsoirDiscoveryEvent>? _discoverySub;
+  MdnsBroadcaster? _broadcaster;
+  MdnsObserver? _observer;
   StreamSubscription<bool>? _trustSub;
+  StreamSubscription<MdnsEvent>? _eventsSub;
 
   final Map<String, Peer> _peers = {};
   final _peersController = StreamController<List<Peer>>.broadcast();
@@ -44,11 +58,20 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   bool _announcing = false;
   bool _started = false;
 
+  // Reconciler state.
+  bool _desiredEnabled = false;
+  bool _reconcileInFlight = false;
+  bool _reconcileQueued = false;
+
   MdnsPeerDiscovery({
+    required MdnsBackend backend,
     required DeviceIdentityRepository identityRepo,
     required Stream<bool> isTrusted,
-  })  : _identityRepo = identityRepo,
-        _isTrusted = isTrusted;
+    Random? random,
+  })  : _backend = backend,
+        _identityRepo = identityRepo,
+        _isTrusted = isTrusted,
+        _random = random ?? Random();
 
   @override
   Stream<List<Peer>> watchPeers() async* {
@@ -77,7 +100,8 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     _log('Stopping');
     await _trustSub?.cancel();
     _trustSub = null;
-    await _disable();
+    _desiredEnabled = false;
+    await _runReconcileToCompletion();
   }
 
   Future<void> dispose() async {
@@ -86,9 +110,50 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     await _announcingController.close();
   }
 
-  Future<void> _onTrustChange(bool trusted) async {
+  // -------- Reconciler --------
+
+  void _onTrustChange(bool trusted) {
     _log('Trust → $trusted');
-    if (trusted) {
+    _desiredEnabled = trusted;
+    _scheduleReconcile();
+  }
+
+  void _scheduleReconcile() {
+    if (_reconcileInFlight) {
+      // A reconcile is already running. Just bump the flag — it'll see
+      // the latest [_desiredEnabled] on its next iteration.
+      _reconcileQueued = true;
+      return;
+    }
+    unawaited(_runReconcileToCompletion());
+  }
+
+  Future<void> _runReconcileToCompletion() async {
+    if (_reconcileInFlight) {
+      // Wait for the in-flight reconciler to finish (it'll pick up our
+      // changes via the queued flag).
+      _reconcileQueued = true;
+      while (_reconcileInFlight) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      return;
+    }
+    _reconcileInFlight = true;
+    try {
+      do {
+        _reconcileQueued = false;
+        await _applyDesiredState();
+      } while (_reconcileQueued);
+    } finally {
+      _reconcileInFlight = false;
+    }
+  }
+
+  Future<void> _applyDesiredState() async {
+    final shouldBeEnabled = _desiredEnabled && _started;
+    final isEnabled = _broadcaster != null || _observer != null;
+    if (shouldBeEnabled == isEnabled) return;
+    if (shouldBeEnabled) {
       await _enable();
     } else {
       await _disable();
@@ -96,118 +161,69 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   }
 
   Future<void> _enable() async {
-    if (_discovery != null) return; // already enabled
-    await _startDiscovery();
-    await _startBroadcast();
+    try {
+      await _startObserver();
+      await _startBroadcaster();
+    } catch (e, st) {
+      _log('Enable failed: $e');
+      developer.log('Enable failed', error: e, stackTrace: st, name: _logName);
+      // Roll back to a clean state so the next reconcile can retry.
+      await _disable();
+      rethrow;
+    }
   }
 
   Future<void> _disable() async {
-    await _stopDiscovery();
-    await _stopBroadcast();
+    await _stopBroadcaster();
+    await _stopObserver();
     if (_peers.isNotEmpty) {
       _peers.clear();
-      _log('Cleared peer list (untrusted network)');
+      _log('Cleared peer list');
       _emit();
     }
   }
 
-  Future<void> _startDiscovery() async {
-    _log('Starting discovery for $serviceType');
-    final discovery = BonsoirDiscovery(type: serviceType);
-    await discovery.ready;
-    // CRITICAL: subscribe BEFORE start(). bonsoir's eventStream is a
-    // broadcast stream from EventChannel.receiveBroadcastStream(), which
-    // does NOT buffer — events emitted by the platform between start()
-    // returning and listen() attaching are dropped.
-    _discoverySub = discovery.eventStream?.listen(_onDiscoveryEvent);
-    await discovery.start();
-    _discovery = discovery;
+  // -------- Observer --------
+
+  Future<void> _startObserver() async {
+    if (_observer != null) return;
+    _log('Starting observer for $serviceType');
+    final observer = await _backend.observe(type: serviceType);
+    _eventsSub = observer.events.listen(_onMdnsEvent);
+    _observer = observer;
   }
 
-  Future<void> _stopDiscovery() async {
-    final d = _discovery;
-    if (d == null) return;
-    _discovery = null;
-    _log('Stopping discovery');
-    await _discoverySub?.cancel();
-    _discoverySub = null;
-    await d.stop();
+  Future<void> _stopObserver() async {
+    final o = _observer;
+    if (o == null) return;
+    _observer = null;
+    _log('Stopping observer');
+    await _eventsSub?.cancel();
+    _eventsSub = null;
+    await o.stop();
   }
 
-  Future<void> _startBroadcast() async {
-    if (_broadcast != null) return;
-    final identity = await _identityRepo.get();
-    _log('Starting broadcast: name="${identity.name}" id=${identity.id} port=$advertisedPort');
-    final service = BonsoirService(
-      name: identity.name,
-      type: serviceType,
-      port: advertisedPort,
-      attributes: {_kDeviceIdAttr: identity.id},
-    );
-    final broadcast = BonsoirBroadcast(service: service);
-    await broadcast.ready;
-    await broadcast.start();
-    _broadcast = broadcast;
-    _setAnnouncing(true);
-  }
-
-  Future<void> _stopBroadcast() async {
-    final b = _broadcast;
-    if (b == null) return;
-    _broadcast = null;
-    _log('Stopping broadcast');
-    await b.stop();
-    _setAnnouncing(false);
-  }
-
-  void _setAnnouncing(bool value) {
-    if (_announcing == value) return;
-    _announcing = value;
-    _announcingController.add(value);
-  }
-
-  /// Logs to BOTH `developer.log` (DevTools-friendly, structured) and
-  /// `debugPrint` (terminal-friendly, visible in `flutter run` and
-  /// `adb logcat`). Real-device debugging needs the latter.
-  void _log(String message) {
-    developer.log(message, name: _logName);
-    debugPrint('[$_logName] $message');
-  }
-
-  Future<void> _onDiscoveryEvent(BonsoirDiscoveryEvent event) async {
+  Future<void> _onMdnsEvent(MdnsEvent event) async {
     final svc = event.service;
-    final svcDesc = svc == null
-        ? '(no service)'
-        : 'name="${svc.name}" id=${svc.attributes[_kDeviceIdAttr] ?? "(none)"}';
-    _log('Event ${event.type.name} → $svcDesc');
+    final id = svc.attributes[_kDeviceIdAttr];
+    _log('Event ${event.kind.name} → name="${svc.name}" id=${id ?? "(none)"}');
 
-    switch (event.type) {
-      case BonsoirDiscoveryEventType.discoveryServiceFound:
-        if (svc != null) {
-          // Resolution is async; the resolved event arrives later with host.
-          await svc.resolve(_discovery!.serviceResolver);
-        }
-      case BonsoirDiscoveryEventType.discoveryServiceResolved:
-        if (svc is ResolvedBonsoirService) {
-          await _onResolved(svc);
-        }
-      case BonsoirDiscoveryEventType.discoveryServiceLost:
-        if (svc != null) {
-          final id = svc.attributes[_kDeviceIdAttr];
-          if (id != null && _peers.remove(id) != null) {
-            _log('Removed peer $id; peers=${_peers.length}');
-            _emit();
-          }
-        }
-      case BonsoirDiscoveryEventType.discoveryServiceResolveFailed:
-      case BonsoirDiscoveryEventType.discoveryStarted:
-      case BonsoirDiscoveryEventType.discoveryStopped:
-      case BonsoirDiscoveryEventType.unknown:
+    switch (event.kind) {
+      case MdnsEventKind.found:
+        // Resolution is handled by the backend; we'll get a `resolved`
+        // event later with host/port populated.
         break;
+      case MdnsEventKind.resolved:
+        await _onResolved(svc);
+      case MdnsEventKind.lost:
+        if (id != null && _peers.remove(id) != null) {
+          _log('Removed peer $id; peers=${_peers.length}');
+          _emit();
+        }
     }
   }
 
-  Future<void> _onResolved(ResolvedBonsoirService svc) async {
+  Future<void> _onResolved(MdnsService svc) async {
     final identity = await _identityRepo.get();
     final id = svc.attributes[_kDeviceIdAttr];
     if (id == null) {
@@ -219,21 +235,79 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
       return;
     }
 
+    // Prefer the human-readable name from TXT; fall back to the mDNS
+    // service name (which may have an NSD-collision suffix like "(2)").
+    final displayName = svc.attributes[_kNameAttr] ?? svc.name;
+
     _peers[id] = Peer(
       id: id,
-      name: svc.name,
+      name: displayName,
       host: svc.host,
       port: svc.port,
       // Pairing arrives in slice 4; until then everyone shows as unpaired.
       isPaired: false,
       lastSeen: DateTime.now(),
     );
-    _log('Added peer name="${svc.name}" id=$id host=${svc.host}:${svc.port}; peers=${_peers.length}');
+    _log('Added peer name="$displayName" id=$id host=${svc.host}:${svc.port}; peers=${_peers.length}');
     _emit();
+  }
+
+  // -------- Broadcaster --------
+
+  Future<void> _startBroadcaster() async {
+    if (_broadcaster != null) return;
+    final identity = await _identityRepo.get();
+
+    // Session-unique mDNS name to avoid the platform NSD layer auto-
+    // renaming on local-cache collision (the "(2)" issue from real-
+    // device testing). The user-visible name lives in TXT.
+    final sessionTag = _randomTag();
+    final mdnsName = 'sharer-$sessionTag';
+
+    _log('Starting broadcaster: mdnsName="$mdnsName" displayName="${identity.name}" id=${identity.id} port=$advertisedPort');
+    final broadcaster = await _backend.broadcast(MdnsServiceSpec(
+      name: mdnsName,
+      type: serviceType,
+      port: advertisedPort,
+      attributes: {
+        _kDeviceIdAttr: identity.id,
+        _kNameAttr: identity.name,
+      },
+    ));
+    _broadcaster = broadcaster;
+    _setAnnouncing(true);
+  }
+
+  Future<void> _stopBroadcaster() async {
+    final b = _broadcaster;
+    if (b == null) return;
+    _broadcaster = null;
+    _log('Stopping broadcaster');
+    await b.stop();
+    _setAnnouncing(false);
+  }
+
+  String _randomTag() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    return List.generate(8, (_) => chars[_random.nextInt(chars.length)]).join();
+  }
+
+  void _setAnnouncing(bool value) {
+    if (_announcing == value) return;
+    _announcing = value;
+    _announcingController.add(value);
   }
 
   void _emit() {
     _latest = _peers.values.toList(growable: false);
     _peersController.add(_latest);
+  }
+
+  /// Logs to BOTH `developer.log` (DevTools-friendly, structured) and
+  /// `debugPrint` (terminal-friendly, visible in `flutter run` and
+  /// `adb logcat`). Real-device debugging needs the latter.
+  void _log(String message) {
+    developer.log(message, name: _logName);
+    debugPrint('[$_logName] $message');
   }
 }

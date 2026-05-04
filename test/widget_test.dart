@@ -4,8 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sharer/app/app.dart';
 import 'package:sharer/app/providers.dart';
-import 'package:sharer/data/discovery/in_memory_peer_discovery.dart';
 
+import 'fakes/fake_mdns_backend.dart';
 import 'fakes/fake_network_source.dart';
 
 void main() {
@@ -17,14 +17,10 @@ void main() {
       ProviderScope(
         overrides: [
           sharedPreferencesProvider.overrideWithValue(prefs),
-          // Avoid spinning up real mDNS sockets in unit tests.
-          peerDiscoveryProvider.overrideWith((ref) {
-            final discovery = InMemoryPeerDiscovery();
-            ref.onDispose(discovery.dispose);
-            discovery.start();
-            return discovery;
-          }),
-          // No Wi-Fi → quiet-mode banner stays hidden.
+          // Avoid spinning up real mDNS sockets in widget tests.
+          mdnsBackendProvider.overrideWithValue(FakeMdnsBackend()),
+          // No Wi-Fi → trust never fires → discovery stays silent →
+          // quiet-mode banner stays hidden.
           networkSourceProvider
               .overrideWith((ref) => FakeNetworkSource(initial: null)),
         ],

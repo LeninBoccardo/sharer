@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../data/discovery/bonsoir_mdns_backend.dart';
+import '../data/discovery/mdns_backend.dart';
 import '../data/discovery/mdns_peer_discovery.dart';
 import '../data/identity/device_identity_store.dart';
 import '../data/identity/platform_device_name.dart';
@@ -82,8 +84,15 @@ final peerCacheProvider = Provider<PeerCacheRepository>((ref) {
   return PeerCacheStore(ref.watch(sharedPreferencesProvider));
 });
 
+/// Production mDNS backend. Override with FakeMdnsBackend in tests so
+/// nothing touches real platform sockets.
+final mdnsBackendProvider = Provider<MdnsBackend>((ref) {
+  return BonsoirMdnsBackend();
+});
+
 final peerDiscoveryProvider = Provider<PeerDiscoveryRepository>((ref) {
   final discovery = MdnsPeerDiscovery(
+    backend: ref.watch(mdnsBackendProvider),
     identityRepo: ref.watch(deviceIdentityRepoProvider),
     isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
   );
