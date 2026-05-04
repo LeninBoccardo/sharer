@@ -1,12 +1,19 @@
 import 'dart:async';
 import 'dart:developer' as developer;
 
+import 'package:flutter/foundation.dart';
+
 import '../../domain/entities/network_info.dart';
 import '../../domain/repositories/network_watcher_repository.dart';
 import 'network_source.dart';
 import 'trusted_networks_store.dart';
 
 const _logName = 'sharer.network';
+
+void _log(String message) {
+  developer.log(message, name: _logName);
+  debugPrint('[$_logName] $message');
+}
 
 /// Reactive view of "what network are we on, and is it trusted?". Used to
 /// gate mDNS announcements (quiet mode on unrecognized networks). The trust
@@ -36,13 +43,12 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
     final info = await _source.read();
     _latest = info;
     final trusted = _evaluateTrust();
-    developer.log(
+    _log(
       info == null
           ? 'Refresh → no network'
           : 'Refresh → ${info.linkType.name} ssid=${info.ssid ?? "—"} '
               'ip=${info.ipv4 ?? "—"} subnet=${info.subnet ?? "—"} '
               'fingerprint="${info.fingerprint}" trusted=$trusted',
-      name: _logName,
     );
     _network.add(info);
     _isTrusted.add(trusted);
@@ -69,7 +75,7 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
 
   @override
   Future<void> trust(NetworkInfo info) async {
-    developer.log('Trust → "${info.fingerprint}"', name: _logName);
+    _log('Trust → "${info.fingerprint}"');
     await _trusted.add(info.fingerprint);
     _trustedCache = _trusted.load();
     _isTrusted.add(_evaluateTrust());
@@ -83,7 +89,7 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
 
   @override
   Future<void> untrustFingerprint(String fingerprint) async {
-    developer.log('Untrust → "$fingerprint"', name: _logName);
+    _log('Untrust → "$fingerprint"');
     await _trusted.remove(fingerprint);
     _trustedCache = _trusted.load();
     _isTrusted.add(_evaluateTrust());

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:developer' as developer;
 
 import 'package:bonsoir/bonsoir.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/peer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
@@ -64,11 +65,17 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     if (_started) return;
     _started = true;
 
-    developer.log('Starting discovery for $serviceType', name: _logName);
+    _log('Starting discovery for $serviceType');
     _discovery = BonsoirDiscovery(type: serviceType);
     await _discovery!.ready;
-    await _discovery!.start();
+    // CRITICAL: subscribe BEFORE start(). bonsoir's eventStream is a
+    // broadcast stream from EventChannel.receiveBroadcastStream(), which
+    // does NOT buffer — events emitted by the platform between start()
+    // returning and listen() attaching are dropped. On a fast Android
+    // device, "found" + "resolved" for already-on-the-network peers can
+    // fire in that window, leaving the UI permanently empty.
     _discoverySub = _discovery!.eventStream?.listen(_onDiscoveryEvent);
+    await _discovery!.start();
 
     _announceSub = _shouldAnnounce.listen(_onAnnounceFlag);
   }
@@ -78,7 +85,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     if (!_started) return;
     _started = false;
 
-    developer.log('Stopping discovery + broadcast', name: _logName);
+    _log('Stopping discovery + broadcast');
     await _announceSub?.cancel();
     _announceSub = null;
     await _stopBroadcast();
@@ -99,7 +106,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   }
 
   Future<void> _onAnnounceFlag(bool announce) async {
-    developer.log('Announce flag → $announce', name: _logName);
+    _log('Announce flag → $announce');
     if (announce) {
       await _startBroadcast();
     } else {
@@ -110,10 +117,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   Future<void> _startBroadcast() async {
     if (_broadcast != null) return;
     final identity = await _identityRepo.get();
-    developer.log(
-      'Starting broadcast: name="${identity.name}" id=${identity.id} port=$advertisedPort',
-      name: _logName,
-    );
+    _log('Starting broadcast: name="${identity.name}" id=${identity.id} port=$advertisedPort');
     final service = BonsoirService(
       name: identity.name,
       type: serviceType,
@@ -131,7 +135,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     final b = _broadcast;
     if (b == null) return;
     _broadcast = null;
-    developer.log('Stopping broadcast', name: _logName);
+    _log('Stopping broadcast');
     await b.stop();
     _setAnnouncing(false);
   }
@@ -142,8 +146,21 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     _announcingController.add(value);
   }
 
+  /// Logs to BOTH `developer.log` (DevTools-friendly, structured) and
+  /// `debugPrint` (terminal-friendly, visible in `flutter run` and
+  /// `adb logcat`). Real-device debugging needs the latter.
+  void _log(String message) {
+    developer.log(message, name: _logName);
+    debugPrint('[$_logName] $message');
+  }
+
   Future<void> _onDiscoveryEvent(BonsoirDiscoveryEvent event) async {
     final svc = event.service;
+    final svcDesc = svc == null
+        ? '(no service)'
+        : 'name="${svc.name}" id=${svc.attributes[_kDeviceIdAttr] ?? "(none)"}';
+    _log('Event ${event.type.name} → $svcDesc');
+
     switch (event.type) {
       case BonsoirDiscoveryEventType.discoveryServiceFound:
         if (svc != null) {
@@ -157,7 +174,10 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
       case BonsoirDiscoveryEventType.discoveryServiceLost:
         if (svc != null) {
           final id = svc.attributes[_kDeviceIdAttr];
-          if (id != null && _peers.remove(id) != null) _emit();
+          if (id != null && _peers.remove(id) != null) {
+            _log('Removed peer $id; peers=${_peers.length}');
+            _emit();
+          }
         }
       case BonsoirDiscoveryEventType.discoveryServiceResolveFailed:
       case BonsoirDiscoveryEventType.discoveryStarted:
@@ -170,7 +190,14 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   Future<void> _onResolved(ResolvedBonsoirService svc) async {
     final identity = await _identityRepo.get();
     final id = svc.attributes[_kDeviceIdAttr];
-    if (id == null || id == identity.id) return; // skip self & ID-less peers
+    if (id == null) {
+      _log('Resolved without deviceId — skipping (name="${svc.name}")');
+      return;
+    }
+    if (id == identity.id) {
+      _log('Resolved self — skipping (name="${svc.name}")');
+      return;
+    }
 
     _peers[id] = Peer(
       id: id,
@@ -181,6 +208,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
       isPaired: false,
       lastSeen: DateTime.now(),
     );
+    _log('Added peer name="${svc.name}" id=$id host=${svc.host}:${svc.port}; peers=${_peers.length}');
     _emit();
   }
 
