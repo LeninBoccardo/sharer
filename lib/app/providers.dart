@@ -85,7 +85,7 @@ final peerCacheProvider = Provider<PeerCacheRepository>((ref) {
 final peerDiscoveryProvider = Provider<PeerDiscoveryRepository>((ref) {
   final discovery = MdnsPeerDiscovery(
     identityRepo: ref.watch(deviceIdentityRepoProvider),
-    shouldAnnounce: ref.watch(networkWatcherProvider).watchIsTrusted(),
+    isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
   );
   ref.onDispose(discovery.dispose);
   discovery.start();

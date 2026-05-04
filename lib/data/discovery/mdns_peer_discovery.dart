@@ -10,14 +10,16 @@ import '../../domain/repositories/peer_discovery_repository.dart';
 
 /// Discovery + announcement over mDNS / DNS-SD using bonsoir.
 ///
-/// Discovery (listen) runs whenever [start] has been called — even on
-/// untrusted networks, so paired peers that announce themselves there are
-/// still found.
+/// Both discovery and announcement are gated by [isTrusted]: when it emits
+/// `true` we publish ourselves AND start listening for `_sharer._tcp`
+/// peers; when `false` (untrusted network), we tear both down and clear
+/// the peer list. See docs/v1/security.md.
 ///
-/// Announcement is gated by [shouldAnnounce]: when it emits `true` we
-/// publish ourselves under `_sharer._tcp`; when `false` (quiet mode on an
-/// unrecognized network), we tear the broadcast down. See
-/// docs/v1/security.md for the rationale.
+/// Future (slice 4 — pairing): on untrusted networks we'll keep a thin
+/// listener active so paired peers can still be discovered, but filter
+/// out unpaired services. Until pairing exists, full silence is the
+/// correct behavior — an "always-on listener" leaks discovery to any
+/// network the device joins.
 class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   static const serviceType = '_sharer._tcp';
   static const _kDeviceIdAttr = 'deviceId';
@@ -28,12 +30,12 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   static const advertisedPort = 8080;
 
   final DeviceIdentityRepository _identityRepo;
-  final Stream<bool> _shouldAnnounce;
+  final Stream<bool> _isTrusted;
 
   BonsoirBroadcast? _broadcast;
   BonsoirDiscovery? _discovery;
   StreamSubscription<BonsoirDiscoveryEvent>? _discoverySub;
-  StreamSubscription<bool>? _announceSub;
+  StreamSubscription<bool>? _trustSub;
 
   final Map<String, Peer> _peers = {};
   final _peersController = StreamController<List<Peer>>.broadcast();
@@ -44,9 +46,9 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
 
   MdnsPeerDiscovery({
     required DeviceIdentityRepository identityRepo,
-    required Stream<bool> shouldAnnounce,
+    required Stream<bool> isTrusted,
   })  : _identityRepo = identityRepo,
-        _shouldAnnounce = shouldAnnounce;
+        _isTrusted = isTrusted;
 
   @override
   Stream<List<Peer>> watchPeers() async* {
@@ -64,39 +66,18 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   Future<void> start() async {
     if (_started) return;
     _started = true;
-
-    _log('Starting discovery for $serviceType');
-    _discovery = BonsoirDiscovery(type: serviceType);
-    await _discovery!.ready;
-    // CRITICAL: subscribe BEFORE start(). bonsoir's eventStream is a
-    // broadcast stream from EventChannel.receiveBroadcastStream(), which
-    // does NOT buffer — events emitted by the platform between start()
-    // returning and listen() attaching are dropped. On a fast Android
-    // device, "found" + "resolved" for already-on-the-network peers can
-    // fire in that window, leaving the UI permanently empty.
-    _discoverySub = _discovery!.eventStream?.listen(_onDiscoveryEvent);
-    await _discovery!.start();
-
-    _announceSub = _shouldAnnounce.listen(_onAnnounceFlag);
+    _log('Started — reacting to trust state');
+    _trustSub = _isTrusted.listen(_onTrustChange);
   }
 
   @override
   Future<void> stop() async {
     if (!_started) return;
     _started = false;
-
-    _log('Stopping discovery + broadcast');
-    await _announceSub?.cancel();
-    _announceSub = null;
-    await _stopBroadcast();
-
-    await _discoverySub?.cancel();
-    _discoverySub = null;
-    await _discovery?.stop();
-    _discovery = null;
-
-    _peers.clear();
-    _emit();
+    _log('Stopping');
+    await _trustSub?.cancel();
+    _trustSub = null;
+    await _disable();
   }
 
   Future<void> dispose() async {
@@ -105,13 +86,52 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     await _announcingController.close();
   }
 
-  Future<void> _onAnnounceFlag(bool announce) async {
-    _log('Announce flag → $announce');
-    if (announce) {
-      await _startBroadcast();
+  Future<void> _onTrustChange(bool trusted) async {
+    _log('Trust → $trusted');
+    if (trusted) {
+      await _enable();
     } else {
-      await _stopBroadcast();
+      await _disable();
     }
+  }
+
+  Future<void> _enable() async {
+    if (_discovery != null) return; // already enabled
+    await _startDiscovery();
+    await _startBroadcast();
+  }
+
+  Future<void> _disable() async {
+    await _stopDiscovery();
+    await _stopBroadcast();
+    if (_peers.isNotEmpty) {
+      _peers.clear();
+      _log('Cleared peer list (untrusted network)');
+      _emit();
+    }
+  }
+
+  Future<void> _startDiscovery() async {
+    _log('Starting discovery for $serviceType');
+    final discovery = BonsoirDiscovery(type: serviceType);
+    await discovery.ready;
+    // CRITICAL: subscribe BEFORE start(). bonsoir's eventStream is a
+    // broadcast stream from EventChannel.receiveBroadcastStream(), which
+    // does NOT buffer — events emitted by the platform between start()
+    // returning and listen() attaching are dropped.
+    _discoverySub = discovery.eventStream?.listen(_onDiscoveryEvent);
+    await discovery.start();
+    _discovery = discovery;
+  }
+
+  Future<void> _stopDiscovery() async {
+    final d = _discovery;
+    if (d == null) return;
+    _discovery = null;
+    _log('Stopping discovery');
+    await _discoverySub?.cancel();
+    _discoverySub = null;
+    await d.stop();
   }
 
   Future<void> _startBroadcast() async {
