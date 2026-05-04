@@ -85,10 +85,12 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.all(32),
+    // Wrapped in a scroll view so the empty state fits in a small
+    // viewport — landscape phones in particular have very little
+    // vertical room above the bottom button row.
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(Icons.lock_outline,
               size: 56, color: theme.colorScheme.outline),

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -12,7 +13,7 @@ void main() {
     String offerId = 'offer-1',
     int seed = 1,
     String code = '012345',
-    String endpoint = '192.168.68.10:8080',
+    List<String> endpoints = const ['192.168.68.10:8080', '10.5.0.2:8080'],
     String initiatorId = 'lenin-pc',
     String initiatorName = 'Lenin-PC',
     DateTime? expiresAt,
@@ -21,7 +22,7 @@ void main() {
         offerId: offerId,
         psk: psk(seed),
         numericCode: code,
-        endpoint: endpoint,
+        endpoints: endpoints,
         initiatorId: initiatorId,
         initiatorName: initiatorName,
         expiresAt: expiresAt ?? DateTime.utc(2026, 5, 4, 12, 1),
@@ -38,7 +39,7 @@ void main() {
     expect(decoded.offerId, original.offerId);
     expect(decoded.psk, original.psk);
     expect(decoded.numericCode, original.numericCode);
-    expect(decoded.endpoint, original.endpoint);
+    expect(decoded.endpoints, original.endpoints);
     expect(decoded.initiatorId, original.initiatorId);
     expect(decoded.initiatorName, original.initiatorName);
     expect(decoded.expiresAt, original.expiresAt);
@@ -59,18 +60,32 @@ void main() {
   });
 
   test('decode rejects PSK that is not exactly 32 bytes', () {
-    final bad = encodePairingOffer(make())
-        .replaceAll(RegExp(r'^sharer-pair-v1:'), '');
-    // Build a payload with a 16-byte PSK and re-encode.
-    // Easier: assert decode fails on a hand-crafted JSON.
-    const tampered = 'sharer-pair-v1:eyJvZmZlcklkIjoieCIsInBzayI6IkFBQUFBQUFBQ'
-        'UFBQUFBQUFBQUFBQUFBQT09IiwiY29kZSI6IjAxMjM0NSIsImVuZHBvaW50IjoiMTIz'
-        'IiwiaW5pdGlhdG9ySWQiOiJhIiwiaW5pdGlhdG9yTmFtZSI6ImEiLCJleHBpcmVzQXQ'
-        'iOiIyMDI2LTA1LTA0VDEyOjAxOjAwLjAwMFoifQ==';
+    final json = jsonEncode({
+      'offerId': 'x',
+      'psk': base64Encode(Uint8List(16)), // 16 bytes — too short
+      'code': '012345',
+      'endpoints': ['127.0.0.1:8080'],
+      'initiatorId': 'a',
+      'initiatorName': 'a',
+      'expiresAt': '2026-05-04T12:01:00.000Z',
+    });
+    final tampered = 'sharer-pair-v1:${base64UrlEncode(utf8.encode(json))}';
     expect(decodePairingOffer(tampered), isNull,
         reason: 'short PSK must be rejected');
-    // Use bad reference once so analyzer doesn't flag.
-    expect(bad, isNotEmpty);
+  });
+
+  test('decode rejects payload with no endpoints', () {
+    final json = jsonEncode({
+      'offerId': 'x',
+      'psk': base64Encode(Uint8List(32)),
+      'code': '012345',
+      'endpoints': <String>[],
+      'initiatorId': 'a',
+      'initiatorName': 'a',
+      'expiresAt': '2026-05-04T12:01:00.000Z',
+    });
+    final empty = 'sharer-pair-v1:${base64UrlEncode(utf8.encode(json))}';
+    expect(decodePairingOffer(empty), isNull);
   });
 
   test('decode rejects non-six-digit numeric code', () {

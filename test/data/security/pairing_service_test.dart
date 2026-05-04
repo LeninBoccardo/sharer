@@ -37,7 +37,7 @@ void main() {
 
   Future<PairingOffer> mintOffer({Duration? ttl}) async {
     return service.createOffer(
-      endpoint: '192.168.68.10:8080',
+      endpoints: const ['192.168.68.10:8080'],
       ttl: ttl ?? const Duration(seconds: 60),
     );
   }
@@ -63,7 +63,7 @@ void main() {
     expect(offer.psk, hasLength(32));
     expect(offer.initiatorId, 'lenin-pc');
     expect(offer.initiatorName, 'Lenin-PC');
-    expect(offer.endpoint, '192.168.68.10:8080');
+    expect(offer.endpoints, ['192.168.68.10:8080']);
     expect(offer.expiresAt, now.add(const Duration(seconds: 60)));
   });
 

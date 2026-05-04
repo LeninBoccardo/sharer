@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../app/providers.dart';
+import '../../data/network/local_addresses.dart';
 import '../../data/security/pairing_codec.dart';
 import '../../domain/entities/paired_device.dart';
 import '../../domain/entities/pairing_offer.dart';
@@ -25,6 +26,8 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
   PairingOffer? _offer;
   String? _error;
   StreamSubscription<PairedDevice>? _completionSub;
+  Timer? _countdownTicker;
+  Duration _timeLeft = Duration.zero;
 
   @override
   void initState() {
@@ -33,19 +36,29 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
   }
 
   Future<void> _bootstrap() async {
-    final network = ref.read(currentNetworkProvider).value;
-    final server = ref.read(httpFileServerProvider);
-    final ip = network?.ipv4;
-    final port = server.boundPort;
-    if (ip == null || port == null) {
+    final port = ref.read(httpFileServerProvider).boundPort;
+    if (port == null) {
       setState(() => _error =
           'Trust this network first to show a pairing code. Pairing has '
           'to happen on a network you control.');
       return;
     }
 
+    // Enumerate every local IPv4 — the responder may not be reachable on
+    // our default-route interface (PCs typically have a Hyper-V/Ethernet
+    // adapter that's invisible to phones on the home Wi-Fi).
+    final ips = await localIpv4Addresses();
+    if (ips.isEmpty) {
+      if (!mounted) return;
+      setState(() => _error =
+          'No local network address available. Connect to a network and '
+          'try again.');
+      return;
+    }
+    final endpoints = [for (final ip in ips) '$ip:$port'];
+
     final pairing = ref.read(pairingServiceProvider);
-    final offer = await pairing.createOffer(endpoint: '$ip:$port');
+    final offer = await pairing.createOffer(endpoints: endpoints);
 
     _completionSub = pairing.completions.listen((paired) {
       if (paired.deviceId == offer.initiatorId) return;
@@ -57,11 +70,41 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
     });
 
     if (!mounted) return;
-    setState(() => _offer = offer);
+    setState(() {
+      _offer = offer;
+      _timeLeft = offer.expiresAt.difference(DateTime.now());
+    });
+    _startCountdown();
+  }
+
+  void _startCountdown() {
+    _countdownTicker?.cancel();
+    _countdownTicker =
+        Timer.periodic(const Duration(seconds: 1), (_) => _onTick());
+  }
+
+  void _onTick() {
+    final offer = _offer;
+    if (offer == null) return;
+    final remaining = offer.expiresAt.difference(DateTime.now());
+    if (!mounted) return;
+    if (remaining.isNegative) {
+      _countdownTicker?.cancel();
+      _countdownTicker = null;
+      setState(() {
+        _timeLeft = Duration.zero;
+        _error = 'This code has expired. Go back and tap Show code again.';
+        _offer = null;
+      });
+      ref.read(pairingServiceProvider).cancelOffer(offer.offerId);
+      return;
+    }
+    setState(() => _timeLeft = remaining);
   }
 
   @override
   void dispose() {
+    _countdownTicker?.cancel();
     final offer = _offer;
     if (offer != null) {
       ref.read(pairingServiceProvider).cancelOffer(offer.offerId);
@@ -106,23 +149,28 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
     }
 
     final encoded = encodePairingOffer(offer);
+    final secondsLeft = _timeLeft.inSeconds.clamp(0, 99);
+    final primaryEndpoint = offer.endpoints.first;
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Card(
-            elevation: 0,
-            color: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-              side: BorderSide(color: theme.colorScheme.outlineVariant),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: QrImageView(
-                data: encoded,
-                size: 280,
-                backgroundColor: Colors.white,
+          Center(
+            child: Card(
+              elevation: 0,
+              color: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+                side: BorderSide(color: theme.colorScheme.outlineVariant),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: QrImageView(
+                  data: encoded,
+                  size: 280,
+                  backgroundColor: Colors.white,
+                ),
               ),
             ),
           ),
@@ -152,7 +200,7 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text('${offer.endpoint}  ·  expires in 60s',
+                Text('$primaryEndpoint  ·  expires in ${secondsLeft}s',
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: theme.colorScheme.outline)),
               ],

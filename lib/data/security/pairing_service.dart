@@ -65,23 +65,27 @@ class PairingService {
   /// the offer (QR + numeric code) and listens on [completions] for the
   /// responder's POST.
   Future<PairingOffer> createOffer({
-    required String endpoint,
+    required List<String> endpoints,
     Duration ttl = const Duration(seconds: 60),
   }) async {
     _purgeExpired();
+    if (endpoints.isEmpty) {
+      throw ArgumentError.value(
+          endpoints, 'endpoints', 'must contain at least one host:port');
+    }
     final identity = await _identity.get();
     final offer = PairingOffer(
       offerId: _uuid.v4(),
       psk: _randomBytes(32),
       numericCode: _randomNumericCode(),
-      endpoint: endpoint,
+      endpoints: List.unmodifiable(endpoints),
       initiatorId: identity.id,
       initiatorName: identity.name,
       expiresAt: _now().add(ttl),
     );
     _activeOffers[offer.offerId] = offer;
     _log('createOffer id=${offer.offerId} code=${offer.numericCode} '
-        'endpoint=$endpoint expiresAt=${offer.expiresAt.toIso8601String()}');
+        'endpoints=$endpoints expiresAt=${offer.expiresAt.toIso8601String()}');
     return offer;
   }
 

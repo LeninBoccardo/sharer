@@ -14,7 +14,7 @@ String encodePairingOffer(PairingOffer offer) {
     'offerId': offer.offerId,
     'psk': base64Encode(offer.psk),
     'code': offer.numericCode,
-    'endpoint': offer.endpoint,
+    'endpoints': offer.endpoints,
     'initiatorId': offer.initiatorId,
     'initiatorName': offer.initiatorName,
     'expiresAt': offer.expiresAt.toUtc().toIso8601String(),
@@ -38,11 +38,16 @@ PairingOffer? decodePairingOffer(String raw) {
     if (psk.length != 32) return null;
     final code = j['code'] as String;
     if (!RegExp(r'^\d{6}$').hasMatch(code)) return null;
+    final endpointsRaw = j['endpoints'];
+    final endpoints = endpointsRaw is List
+        ? endpointsRaw.map((e) => e as String).toList(growable: false)
+        : const <String>[];
+    if (endpoints.isEmpty) return null;
     return PairingOffer(
       offerId: j['offerId'] as String,
       psk: psk,
       numericCode: code,
-      endpoint: j['endpoint'] as String,
+      endpoints: endpoints,
       initiatorId: j['initiatorId'] as String,
       initiatorName: j['initiatorName'] as String,
       expiresAt: DateTime.parse(j['expiresAt'] as String),

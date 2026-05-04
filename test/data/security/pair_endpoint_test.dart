@@ -65,7 +65,7 @@ void main() {
 
   test('responder can complete pairing end-to-end', () async {
     final offer = await pairing.createOffer(
-      endpoint: '127.0.0.1:${server.boundPort}',
+      endpoints: ['127.0.0.1:${server.boundPort}'],
     );
 
     final result = await client.postCompletion(
@@ -83,11 +83,11 @@ void main() {
     final ghostOffer = PairingOffer(
       offerId: 'unknown',
       psk: (await pairing.createOffer(
-        endpoint: '127.0.0.1:${server.boundPort}',
+        endpoints: ['127.0.0.1:${server.boundPort}'],
       ))
           .psk,
       numericCode: '000000',
-      endpoint: '127.0.0.1:${server.boundPort}',
+      endpoints: ['127.0.0.1:${server.boundPort}'],
       initiatorId: 'lenin-pc',
       initiatorName: 'Lenin-PC',
       expiresAt: DateTime.now().add(const Duration(seconds: 60)),
@@ -103,14 +103,14 @@ void main() {
 
   test('PairingClient surfaces network errors as networkError', () async {
     final offer = await pairing.createOffer(
-      endpoint: '127.0.0.1:${server.boundPort}',
+      endpoints: ['127.0.0.1:${server.boundPort}'],
     );
     // Forge an offer pointing at a closed port.
     final brokenOffer = PairingOffer(
       offerId: offer.offerId,
       psk: offer.psk,
       numericCode: offer.numericCode,
-      endpoint: '127.0.0.1:1', // nothing listens on port 1
+      endpoints: const ['127.0.0.1:1'], // nothing listens on port 1
       initiatorId: offer.initiatorId,
       initiatorName: offer.initiatorName,
       expiresAt: offer.expiresAt,
@@ -125,13 +125,13 @@ void main() {
   test('PairingClient rejects malformed endpoint without hitting the network',
       () async {
     final offer = await pairing.createOffer(
-      endpoint: '127.0.0.1:${server.boundPort}',
+      endpoints: ['127.0.0.1:${server.boundPort}'],
     );
     final brokenOffer = PairingOffer(
       offerId: offer.offerId,
       psk: offer.psk,
       numericCode: offer.numericCode,
-      endpoint: 'not-a-host-port',
+      endpoints: const ['not-a-host-port'],
       initiatorId: offer.initiatorId,
       initiatorName: offer.initiatorName,
       expiresAt: offer.expiresAt,
@@ -141,5 +141,19 @@ void main() {
       responder: const DeviceIdentity(id: 'realme', name: 'Realme'),
     );
     expect(result, PairingPostResult.malformedEndpoint);
+  });
+
+  test('PairingClient prefers a reachable endpoint and ignores unreachable ones',
+      () async {
+    final offer = await pairing.createOffer(
+      endpoints: ['127.0.0.1:1', '127.0.0.1:${server.boundPort}'],
+    );
+    final result = await client.postCompletion(
+      offer: offer,
+      responder: const DeviceIdentity(id: 'realme', name: 'Realme'),
+    );
+    expect(result, PairingPostResult.ok,
+        reason: 'should fall through to the working endpoint');
+    expect((await paired.getAll()).single.deviceId, 'realme');
   });
 }

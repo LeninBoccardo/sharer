@@ -165,7 +165,10 @@ class _PeerTile extends ConsumerWidget {
   Future<void> _pickAndSend(BuildContext context, WidgetRef ref) async {
     final FilePickerResult? result;
     try {
-      result = await FilePicker.platform.pickFiles(withReadStream: true);
+      result = await FilePicker.platform.pickFiles(
+        withReadStream: true,
+        allowMultiple: true,
+      );
     } catch (e) {
       if (!context.mounted) return;
       _toast(context, 'File picker error: $e');
@@ -173,29 +176,40 @@ class _PeerTile extends ConsumerWidget {
     }
     if (result == null || result.files.isEmpty) return;
 
-    final picked = result.files.first;
-    final stream = picked.readStream;
-    if (stream == null) {
-      if (!context.mounted) return;
-      _toast(context, 'Could not read file (no stream available).');
-      return;
+    final transferService = ref.read(transferServiceProvider);
+    var queued = 0;
+    var skipped = 0;
+    for (final picked in result.files) {
+      final stream = picked.readStream;
+      if (stream == null) {
+        skipped++;
+        continue;
+      }
+      final payload = FilePayload(
+        fileName: picked.name,
+        sizeBytes: picked.size,
+        bytes: stream,
+        mimeType: lookupMimeType(picked.name),
+      );
+      try {
+        await transferService.send(peer: peer, file: payload);
+        queued++;
+      } catch (_) {
+        skipped++;
+      }
     }
-
-    final payload = FilePayload(
-      fileName: picked.name,
-      sizeBytes: picked.size,
-      bytes: stream,
-      mimeType: lookupMimeType(picked.name),
-    );
-
-    try {
-      final transfer =
-          await ref.read(transferServiceProvider).send(peer: peer, file: payload);
-      if (!context.mounted) return;
-      _toast(context, 'Sending ${transfer.fileName} → ${peer.name}…');
-    } catch (e) {
-      if (!context.mounted) return;
-      _toast(context, 'Send failed: $e');
+    if (!context.mounted) return;
+    if (queued == 0) {
+      _toast(context, 'No files could be sent.');
+    } else if (queued == 1 && skipped == 0) {
+      _toast(context,
+          'Sending ${result.files.first.name} → ${peer.name}…');
+    } else {
+      _toast(
+        context,
+        'Sending $queued file${queued == 1 ? '' : 's'} → ${peer.name}'
+        '${skipped > 0 ? ' ($skipped skipped)' : ''}…',
+      );
     }
   }
 
