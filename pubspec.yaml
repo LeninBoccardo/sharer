@@ -50,6 +50,10 @@ dependencies:
   # Lightweight persistence for device identity, trusted networks, peer cache.
   shared_preferences: ^2.3.3
 
+  # Secret-grade persistence for paired-device PSKs and (slice 5) TLS keys.
+  # Backed by Keystore on Android, DPAPI on Windows, Keychain on iOS/macOS.
+  flutter_secure_storage: ^9.2.4
+
   # Stable random device IDs.
   uuid: ^4.5.1
 

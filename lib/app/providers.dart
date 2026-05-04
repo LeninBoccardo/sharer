@@ -9,6 +9,8 @@ import '../data/identity/platform_device_name.dart';
 import '../data/network/network_source.dart';
 import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
+import '../data/security/paired_devices_store.dart';
+import '../data/security/secure_key_value_store.dart';
 import '../data/storage/downloads_locator.dart';
 import '../data/storage/peer_cache_store.dart';
 import '../data/transport/http_file_client.dart';
@@ -16,10 +18,12 @@ import '../data/transport/http_file_server.dart';
 import '../data/transport/transfer_service_impl.dart';
 import '../domain/entities/device_identity.dart';
 import '../domain/entities/network_info.dart';
+import '../domain/entities/paired_device.dart';
 import '../domain/entities/peer.dart';
 import '../domain/entities/transfer.dart';
 import '../domain/repositories/device_identity_repository.dart';
 import '../domain/repositories/network_watcher_repository.dart';
+import '../domain/repositories/paired_devices_repository.dart';
 import '../domain/repositories/peer_cache_repository.dart';
 import '../domain/repositories/peer_discovery_repository.dart';
 import '../domain/repositories/transfer_service.dart';
@@ -88,6 +92,22 @@ final trustedNetworksProvider = StreamProvider<Set<String>>((ref) {
 
 final peerCacheProvider = Provider<PeerCacheRepository>((ref) {
   return PeerCacheStore(ref.watch(sharedPreferencesProvider));
+});
+
+/// Production secure key/value store. Override with InMemorySecureKeyValueStore
+/// in tests so paired-device tests don't touch the platform Keystore/DPAPI.
+final secureKeyValueStoreProvider = Provider<SecureKeyValueStore>((ref) {
+  return FlutterSecureStorageAdapter();
+});
+
+final pairedDevicesRepoProvider = Provider<PairedDevicesRepository>((ref) {
+  final store = PairedDevicesStore(ref.watch(secureKeyValueStoreProvider));
+  ref.onDispose(store.dispose);
+  return store;
+});
+
+final pairedDevicesStreamProvider = StreamProvider<List<PairedDevice>>((ref) {
+  return ref.watch(pairedDevicesRepoProvider).watch();
 });
 
 /// Production mDNS backend. Override with FakeMdnsBackend in tests so
