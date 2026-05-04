@@ -8,6 +8,7 @@ import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/peer.dart';
 import '../diagnostics/diagnostics_screen.dart';
 import '../pairing/devices_screen.dart';
+import '../pairing/show_pair_screen.dart';
 import '../transfers/transfers_section.dart';
 import 'quiet_mode_banner.dart';
 
@@ -157,7 +158,86 @@ class _PeerTile extends ConsumerWidget {
         subtitle:
             Text(peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…'),
         trailing: const Icon(Icons.send),
-        onTap: peer.isReachable ? () => _pickAndSend(context, ref) : null,
+        onTap: peer.isReachable
+            ? () => _onTap(context, ref, isPaired: isPaired)
+            : null,
+      ),
+    );
+  }
+
+  Future<void> _onTap(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool isPaired,
+  }) async {
+    if (!isPaired) {
+      await _showPairFirstSheet(context);
+      return;
+    }
+    await _pickAndSend(context, ref);
+  }
+
+  Future<void> _showPairFirstSheet(BuildContext context) async {
+    final theme = Theme.of(context);
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetCtx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Icon(Icons.lock_outline,
+                  size: 40, color: theme.colorScheme.primary),
+              const SizedBox(height: 12),
+              Text('Pair with ${peer.name} first',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(
+                'Devices need to pair once before sharing files. After '
+                'pairing, you can transfer freely on any network.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: theme.colorScheme.outline),
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                icon: const Icon(Icons.qr_code_2),
+                label: const Text('Show my code'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const ShowPairScreen(),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.devices),
+                label: const Text('Open Devices'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const DevicesScreen(),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -23,7 +23,9 @@ Each subsystem is a separately testable module behind a `domain` interface.
 
 | Subsystem | Always on? | Notes |
 | --- | --- | --- |
-| HTTP server (shelf) | Always on (any network) | Streams uploads to disk; never buffers full files. Port 8080 default, fall back if taken. Authenticated by HMAC + cert pinning, so it's safe to leave running on unfamiliar networks. |
+| HTTP server (shelf) | Always on (any network, post-slice-5.1) | Streams uploads to disk; never buffers full files. Port 8080 default, fall back if taken. Authenticated by HMAC + cert pinning, so it's safe to leave running on unfamiliar networks. Until slice 5.1 lands, the server still trust-binds — but **every** `/upload` requires a valid signature regardless (slice 4.4). |
+| `/upload` route | Whenever server is bound | Requires HMAC signature from a paired peer. **Unsigned requests are rejected with 401 even on trusted networks** (slice 4.4) — trust-network is never an authorization mechanism. |
+| `/pair-invite` route | **Trusted networks only** (slice 4.6) | LAN-invite endpoint. Only registered when the network is trusted; absent on untrusted networks regardless of pair state. |
 | HTTP client | On demand | Streams from disk. Uses connection pooling for chunked transfers. |
 | mDNS announcer (`_sharer._tcp`) | **Trusted networks only.** | Implemented behind the [`MdnsBackend`](../../lib/data/discovery/mdns_backend.dart) interface (production: bonsoir; test: `FakeMdnsBackend`). Service name is **session-unique** (`sharer-<random>`) to avoid the platform NSD layer auto-renaming on local-cache collision (the "(2)" issue). Display name lives in the `name` TXT attribute. |
 | mDNS listener | **Trusted networks only** (until pairing lands) | Same backend as the announcer. Maintains in-memory peer list keyed by `deviceId` (advertised in TXT). On untrusted networks the listener is fully torn down and the peer list cleared. **Once pairing exists (slice 4), the listener will stay active on untrusted networks too**, but UI will filter to paired peers only — so paired devices remain reachable on any Wi-Fi while strangers stay invisible. Until then, full silence on untrusted is the correct default. |
@@ -50,6 +52,18 @@ The mDNS orchestrator ([`MdnsPeerDiscovery`](../../lib/data/discovery/mdns_peer_
 - **Auto-rename on collision** — bonsoir does not suppress the platform behavior. We sidestep it with session-unique mDNS names (rule 5).
 
 If bonsoir ever becomes unsuitable, swapping it out means writing a new `MdnsBackend` impl. Production code does not import `package:bonsoir` directly outside that file.
+
+## Transport — strong rules
+
+These are enforced by the test suite at [`test/data/transport/http_file_server_test.dart`](../../test/data/transport/http_file_server_test.dart) and [`test/data/security/`](../../test/data/security/). Any change here must keep them green.
+
+1. **Pairing is the only path to `/upload`** (slice 4.4). The server returns 401 for any upload that fails HMAC verification — including unsigned uploads — *regardless* of network trust state. Network trust is a discoverability control, never an authorization mechanism.
+2. **`/pair-invite` is registered only on trusted networks** (slice 4.6). It comes up when the watcher reports trusted, and is removed before the listener tears down on untrust. There is no path to invite-without-trust.
+3. **In-flight pair handshakes are atomic.** A pending invite registry holds `(offerId, ephemeralKeypair, peerId, peerPublicKey, createdAt)`. Any failure path — timeout, user "Doesn't match", crash before fingerprint confirm — wipes the entry whole. There is no half-paired state.
+4. **Process-death recovery is explicit, not automatic.** A persisted in-flight marker exists so an app crash mid-handshake is recoverable, but the next launch surfaces "Previous pairing was interrupted — re-pair?" rather than auto-resuming. Resuming a half-completed handshake is unsafe (peer may have moved on).
+5. **DeviceId is a public-key fingerprint** (slice 4.5+). `deviceId = first 16 hex chars of SHA-256(Ed25519 publicKey)`. An attacker on the LAN cannot fabricate a deviceId without finding a hash preimage. The Ed25519 private key is in `flutter_secure_storage`; the public key is published in mDNS TXT and embedded in pair invites/responses.
+6. **Per-pair PSK, never shared across pairs.** Each `PairedDevice` carries its own 32-byte PSK derived independently. Compromise of one pair never exposes another.
+7. **Per-transfer key, derived not transmitted.** End-to-end chunk encryption (slice 5.3) derives `transferKey = HKDF(PSK ‖ transferId)` per upload. The PSK never encrypts bytes directly; the transferKey lifetime is one transfer.
 
 ## Hot path: share flow
 

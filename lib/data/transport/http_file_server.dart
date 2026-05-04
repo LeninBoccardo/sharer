@@ -172,11 +172,17 @@ class HttpFileServer {
       );
     }
 
-    // HMAC gate. Verifier returns Authenticated / Unsigned / Rejected.
-    // Slice 4.2 policy: Authenticated → accept; Unsigned → fall through
-    // to the existing trust-network gate that already gated server bind;
-    // Rejected → 401, drain body so the connection isn't reset abruptly.
-    // Per spec we don't echo the rejection reason on the wire.
+    // HMAC gate (slice 4.4 policy).
+    //
+    // Pairing is the only path to /upload. Unsigned and unverified
+    // requests both return 401, regardless of network trust state — the
+    // network watcher is a discoverability control, not an authorization
+    // mechanism. See docs/v1/security.md §5 and the strong rules in
+    // docs/v1/architecture.md.
+    //
+    // Test convenience only: when the server is constructed with
+    // `verifier: null`, the gate is disabled. Production providers
+    // always wire a real verifier.
     final verifier = _verifier;
     if (verifier != null) {
       final outcome = await verifier.verify(
@@ -191,8 +197,11 @@ class HttpFileServer {
       );
       switch (outcome) {
         case HmacAuthenticated():
-        case HmacUnsigned():
           break;
+        case HmacUnsigned():
+          _log('Reject upload from $senderId ($senderName): unsigned');
+          await request.read().drain<void>();
+          return Response.unauthorized('');
         case HmacRejected(:final reason):
           _log('Reject upload from $senderId ($senderName): $reason');
           await request.read().drain<void>();

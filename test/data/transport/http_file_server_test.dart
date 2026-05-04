@@ -35,6 +35,60 @@ Future<void> _settle() async {
   return (server: server, trust: trust, dir: dir);
 }
 
+/// Bundles a server with a wired verifier and one paired peer that the
+/// test signs every request as. Mirrors slice 4.4's production posture
+/// (verifier always set; only signed requests are accepted).
+typedef _SignedFixture = ({
+  HttpFileServer server,
+  StreamController<bool> trust,
+  Directory dir,
+  PairedDevicesStore paired,
+  HmacSigner signer,
+  PairedDevice peer,
+});
+
+Future<_SignedFixture> _setupSigned({int seed = 7}) async {
+  final dir = Directory.systemTemp.createTempSync('sharer_server_test_');
+  final trust = StreamController<bool>.broadcast();
+  final paired = PairedDevicesStore(FakeSecureKeyValueStore());
+  final peer = PairedDevice(
+    deviceId: 'sender-1',
+    displayName: 'Sender',
+    psk: _psk(seed),
+    pairedAt: DateTime.utc(2026, 5, 4),
+  );
+  await paired.add(peer);
+  final server = HttpFileServer(
+    downloads: FakeDownloadsLocator(dir),
+    isTrusted: trust.stream,
+    verifier: HmacVerifier(paired),
+    port: 0,
+  );
+  return (
+    server: server,
+    trust: trust,
+    dir: dir,
+    paired: paired,
+    signer: HmacSigner(),
+    peer: peer,
+  );
+}
+
+SignedRequestHeaders _signFor({
+  required _SignedFixture f,
+  required String fileName,
+  required int filesize,
+}) {
+  return f.signer.sign(
+    psk: f.peer.psk,
+    method: 'POST',
+    path: TransportProtocol.uploadPath,
+    senderDeviceId: f.peer.deviceId,
+    filename: fileName,
+    filesize: filesize,
+  );
+}
+
 Future<HttpClientResponse> _postUpload({
   required int port,
   required String fileName,
@@ -145,73 +199,75 @@ void main() {
     });
   });
 
-  group('HttpFileServer — upload', () {
+  group('HttpFileServer — upload (signed)', () {
     test('writes the body to disk and emits started + completed events',
         () async {
-      final s = _setup();
+      final f = await _setupSigned();
       addTearDown(() async {
-        await s.server.dispose();
-        await s.trust.close();
-        s.dir.deleteSync(recursive: true);
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
       });
 
       final events = <IncomingEvent>[];
-      final eventsSub = s.server.events.listen(events.add);
+      final eventsSub = f.server.events.listen(events.add);
 
-      await s.server.start();
-      s.trust.add(true);
+      await f.server.start();
+      f.trust.add(true);
       await _settle();
 
       const payload = 'hello sharer world';
+      final body = utf8.encode(payload);
       final response = await _postUpload(
-        port: s.server.boundPort!,
+        port: f.server.boundPort!,
         fileName: 'greeting.txt',
-        body: utf8.encode(payload),
+        body: body,
+        senderId: f.peer.deviceId,
+        senderName: f.peer.displayName,
+        signed: _signFor(f: f, fileName: 'greeting.txt', filesize: body.length),
       );
 
       expect(response.statusCode, HttpStatus.ok);
       await response.drain<void>();
-
-      // Allow the server to drain its event controller.
       await _settle();
 
-      // File on disk matches what we sent.
-      final saved = File('${s.dir.path}${Platform.pathSeparator}greeting.txt');
+      final saved = File('${f.dir.path}${Platform.pathSeparator}greeting.txt');
       expect(await saved.exists(), isTrue);
       expect(await saved.readAsString(), payload);
 
-      // Events arrived in the right shape.
       expect(events.first, isA<IncomingStarted>());
       final started = events.first as IncomingStarted;
       expect(started.fileName, 'greeting.txt');
       expect(started.totalBytes, payload.length);
-      expect(started.senderName, 'Sender');
+      expect(started.senderName, f.peer.displayName);
 
       expect(events.last, isA<IncomingCompleted>());
-      expect(
-        (events.last as IncomingCompleted).savedPath,
-        endsWith('greeting.txt'),
-      );
+      expect((events.last as IncomingCompleted).savedPath,
+          endsWith('greeting.txt'));
 
       await eventsSub.cancel();
     });
 
-    test('rejects requests with no filename header', () async {
-      final s = _setup();
+    test('rejects signed requests with no filename header (400)', () async {
+      final f = await _setupSigned();
       addTearDown(() async {
-        await s.server.dispose();
-        await s.trust.close();
-        s.dir.deleteSync(recursive: true);
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
       });
 
-      await s.server.start();
-      s.trust.add(true);
+      await f.server.start();
+      f.trust.add(true);
       await _settle();
 
+      // 400 for missing filename, not 401 — verifier should never see this
+      // request because the filename check happens first.
       final client = HttpClient();
       try {
         final req = await client.postUrl(Uri.parse(
-            'http://127.0.0.1:${s.server.boundPort}${TransportProtocol.uploadPath}'));
+            'http://127.0.0.1:${f.server.boundPort}${TransportProtocol.uploadPath}'));
         req.headers.contentLength = 0;
         final resp = await req.close();
         expect(resp.statusCode, HttpStatus.badRequest);
@@ -222,67 +278,82 @@ void main() {
     });
 
     test('renames on collision (foo.txt → foo (1).txt)', () async {
-      final s = _setup();
+      final f = await _setupSigned();
       addTearDown(() async {
-        await s.server.dispose();
-        await s.trust.close();
-        s.dir.deleteSync(recursive: true);
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
       });
 
-      await s.server.start();
-      s.trust.add(true);
+      await f.server.start();
+      f.trust.add(true);
       await _settle();
 
-      final port = s.server.boundPort!;
+      final port = f.server.boundPort!;
+      final firstBody = utf8.encode('first');
+      final secondBody = utf8.encode('second');
       await (await _postUpload(
         port: port,
         fileName: 'foo.txt',
-        body: utf8.encode('first'),
-      )).drain<void>();
+        body: firstBody,
+        senderId: f.peer.deviceId,
+        senderName: f.peer.displayName,
+        signed: _signFor(f: f, fileName: 'foo.txt', filesize: firstBody.length),
+      ))
+          .drain<void>();
       await (await _postUpload(
         port: port,
         fileName: 'foo.txt',
-        body: utf8.encode('second'),
-      )).drain<void>();
-
+        body: secondBody,
+        senderId: f.peer.deviceId,
+        senderName: f.peer.displayName,
+        signed:
+            _signFor(f: f, fileName: 'foo.txt', filesize: secondBody.length),
+      ))
+          .drain<void>();
       await _settle();
 
-      final first = File('${s.dir.path}${Platform.pathSeparator}foo.txt');
+      final first = File('${f.dir.path}${Platform.pathSeparator}foo.txt');
       final second =
-          File('${s.dir.path}${Platform.pathSeparator}foo (1).txt');
+          File('${f.dir.path}${Platform.pathSeparator}foo (1).txt');
       expect(await first.readAsString(), 'first');
       expect(await second.readAsString(), 'second');
     });
 
     test('sanitizes path-traversal attempts in the filename header',
         () async {
-      final s = _setup();
+      final f = await _setupSigned();
       addTearDown(() async {
-        await s.server.dispose();
-        await s.trust.close();
-        s.dir.deleteSync(recursive: true);
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
       });
 
-      await s.server.start();
-      s.trust.add(true);
+      await f.server.start();
+      f.trust.add(true);
       await _settle();
 
+      final body = utf8.encode('nope');
       final response = await _postUpload(
-        port: s.server.boundPort!,
+        port: f.server.boundPort!,
         fileName: '../../etc/passwd',
-        body: utf8.encode('nope'),
+        body: body,
+        senderId: f.peer.deviceId,
+        senderName: f.peer.displayName,
+        signed:
+            _signFor(f: f, fileName: '../../etc/passwd', filesize: body.length),
       );
       expect(response.statusCode, HttpStatus.ok);
       await response.drain<void>();
       await _settle();
 
-      // Nothing escaped the sandbox dir.
       final escaped = Directory(
-          '${s.dir.parent.parent.path}${Platform.pathSeparator}etc');
+          '${f.dir.parent.parent.path}${Platform.pathSeparator}etc');
       expect(escaped.existsSync(), isFalse,
           reason: 'should not have written outside the downloads dir');
-      // And something landed inside it (sanitized).
-      expect(s.dir.listSync(), isNotEmpty);
+      expect(f.dir.listSync(), isNotEmpty);
     });
   });
 
@@ -412,9 +483,10 @@ void main() {
       await response.drain<void>();
     });
 
-    test('falls through to trust-network gate when request is unsigned',
-        () async {
-      // Verifier wired but no signed headers — slice 4.2 fallback path.
+    test('rejects unsigned uploads with 401 even on trusted network '
+        '(slice 4.4)', () async {
+      // Pairing is the only path to /upload. Trusted-network is no longer
+      // an authorization fallback. See docs/v1/security.md §5.
       final s = _setup(verifier: verifier);
       addTearDown(() async {
         await s.server.dispose();
@@ -428,10 +500,13 @@ void main() {
       final response = await _postUpload(
         port: s.server.boundPort!,
         fileName: 'unsigned.txt',
-        body: utf8.encode('unsigned ok for now'),
+        body: utf8.encode('should be rejected'),
       );
-      expect(response.statusCode, HttpStatus.ok);
+      expect(response.statusCode, HttpStatus.unauthorized);
       await response.drain<void>();
+
+      // And nothing landed on disk.
+      expect(s.dir.listSync(), isEmpty);
     });
 
     test('rejects partial signature headers (presence implies completeness)',

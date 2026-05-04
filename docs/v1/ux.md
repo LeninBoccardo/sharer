@@ -66,6 +66,44 @@ Modern but restrained. The intent is "looks like Material You / fluent app from 
 - "No peers found" — empty state on share screen, with explanatory text and "scan for new peers" button.
 - Pairing failures (expired code, mismatched fingerprint) — surface clearly during pairing, never during transfer.
 
+## Pairing UX (slices 4.3–4.6)
+
+### Pair-first sheet (slice 4.4)
+
+Tapping an unpaired peer in the home picker opens a modal sheet, not the file picker:
+
+> **Pair with `Realme RMX2202` first**
+> Devices need to pair once before sharing files. After pairing they can transfer freely on any network.
+> **[Pair via QR]   [Cancel]**
+
+"Pair via QR" pushes the Devices screen with the show-code/scan-code shortcuts. After pairing succeeds, the user taps the (now badged) peer again to start a send — we don't try to remember the picked file across the pairing flow.
+
+### Fingerprint-confirm modal (slice 4.6)
+
+Both sides of a LAN pair invite see the same modal:
+
+> **Confirm pairing with `Lenin-PC`**
+> Both screens should show the same number. If they don't, someone may be relaying.
+> **`12 34 56`** (large, monospaced, tabular)
+> **[Doesn't match]   [Matches]**
+
+UX rules, all load-bearing:
+
+1. **Modal-blocking.** No swipe-to-dismiss, no system-back, no tap-outside. Only the two buttons or an explicit Cancel exit it.
+2. **No timeout = accept.** A 60-second timer expiring aborts pairing on both sides; it never advances to "Matches" silently.
+3. **Both sides must confirm.** The protocol does not store the pair until both ends have tapped Matches. If A confirms and B aborts, A's modal shows "Other device cancelled" and rolls back.
+4. **Process-death is explicit.** App killed mid-confirm wipes the in-flight pair and shows "Previous pairing was interrupted — re-pair?" on next launch, never auto-resumes.
+
+### Stale-pair badge (slice 5.4)
+
+The Devices list shows a small dot per pair:
+
+- **Green** — last successful transfer or heartbeat within 24 h.
+- **Yellow** — visible via mDNS but no successful transfer in 7+ days. "Try Send to confirm we're still paired."
+- **Red** — last send attempt returned 401 (peer likely forgot us). Tapping the row offers "Forget them too?" to restore symmetry.
+
+No broadcasts. The signal flows only one way: I tried to send → I was rejected → I conclude something's wrong → user decides. See [security.md §forget/rediscover](security.md).
+
 ## What the v1 UI does NOT include
 
 - Transfer history beyond the current session.

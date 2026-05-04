@@ -73,3 +73,43 @@ Unresolved design calls. Each entry should be **closed** (with the decision and 
 **Default if undecided:** punt to first UI implementation pass; pick something defensible (probably a saturated teal or indigo) and revisit.
 
 **Answer:** of course this must be something easy to change later. For now stick to the default using indigo
+
+## OQ-9 — iOS support in v1
+
+**Question:** Is iOS in v1's launch scope, with the implication of either an APNs relay we run (so background invite/transfer notifications reach killed apps) or a foreground-only experience?
+
+**Trade-off:** iOS forbids long-lived background networking for non-VOIP/non-streaming apps. `BGAppRefreshTask` wakes are best-effort with no latency guarantee; local notifications fire only while the app is active or via APNs (which needs a server we don't have). A reliable iOS pair-invite-while-killed requires either running a small APNs relay or accepting that iOS users must keep the app foregrounded.
+
+**Default if undecided:** iOS deferred to v2.
+
+**Answer:** iOS is **out of scope for v1**. Lenin does not have an Apple Developer account ($99/yr; not affordable now). Code should not break the iOS build, but no iOS-specific features are guaranteed and no testing is performed against iOS. The foreground-only background limitation is a known v2 polish item; documented but not fixed.
+
+## OQ-10 — Background delivery on Android + Windows (slice 5.2)
+
+**Question:** Skip the v1-style "must have app open to receive invites and confirm transfers" and go directly to a foreground-service / tray-icon model that surfaces system notifications even with the UI hidden?
+
+**Trade-off:** Foreground service on Android is a one-time investment (manifest entry, ongoing notification). It enables real "leave the app closed and still get a pair invite" UX which matches user expectations. v1 of just-keep-the-app-open is an inferior baseline.
+
+**Default if undecided:** ship v2 directly.
+
+**Answer:** ship v2 directly. Android foreground service for the mDNS listener + HTTP server while paired peers exist; Windows tray icon with run-on-startup option; `flutter_local_notifications` for incoming transfer prompts and pair invites. iOS is foreground-only per OQ-9.
+
+## OQ-11 — Encryption scope (slice 5.3)
+
+**Question:** Is per-chunk end-to-end encryption (a) defense-in-depth on LAN over TLS, (b) required to keep a future internet relay from seeing plaintext, or both?
+
+**Trade-off:** TLS already encrypts on the LAN. Adding chunk encryption costs ~5–10% throughput. If the relay use case is in scope, chunk encryption is non-optional and must land before any relay work; if only LAN, it's polish.
+
+**Default if undecided:** both. Land before the relay slice.
+
+**Answer:** **both, mandatory.** Concrete LAN scenario motivating defense-in-depth: user marks a friend's home Wi-Fi as trusted and later learns a malicious ISP technician installed a sniffer on it before the visit. TLS protects bytes if both endpoints stayed configured correctly; chunk encryption survives a TLS misconfiguration or downgrade. Relay scenario is a future feature but requires the same primitive. Construction: `transferKey = HKDF(PSK ‖ transferId)`, AES-256-GCM per chunk with `nonce = transferId(8B) ‖ chunkIndex(4B)`, streaming decrypt to disk.
+
+## OQ-12 — Hardware-backed device identity (post-v1)
+
+**Question:** Should the long-term Ed25519 device key (slice 4.5) be hardware-attested — Android Keystore attestation, iOS Secure Enclave, TPM on Windows — or is `flutter_secure_storage`'s default backing sufficient for v1?
+
+**Trade-off:** Hardware attestation lets a paired peer cryptographically verify "this device key really did originate inside non-rooted hardware," ruling out emulator-based imposter devices. It requires platform code per OS and rate-limited attestation calls. `flutter_secure_storage` already uses Keystore/DPAPI/Keychain *as backing* — the keys never appear in plaintext on disk — but does not expose attestation chains.
+
+**Default if undecided:** v1 uses `flutter_secure_storage`'s default. Attestation is a v2 polish item.
+
+**Answer:** v1 uses `flutter_secure_storage` default backing (hardware-backed on most modern Android/iOS, software-backed on Windows DPAPI / desktop Linux). Attestation deferred to v2. Document the gap so a future audit knows the strength of the identity claim across platforms.

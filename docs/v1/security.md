@@ -59,22 +59,98 @@ Each device generates a self-signed cert at first run. The fingerprint is exchan
 
 This defeats LAN MITM even if the attacker knows the PSK (which they shouldn't, but defense in depth).
 
-### 5. Network watcher → discoverability gate (NOT a transfer kill-switch)
+### 5. Network watcher → discoverability gate ONLY (never an authorization mechanism)
 
-The user requirement: **pairing is a one-time identifier**. Once two devices are paired, they must be able to transfer files no matter which Wi-Fi they meet on. Tearing down the HTTP server on every unfamiliar network would force re-pairing in practice and is therefore disallowed.
+**Hard rule, restated for clarity:** trusting a network changes *what your device announces and accepts as discoverable*, never *who can push files to you*. Authorization is the pairing, full stop. A modified Sharer-imposter on a Wi-Fi the user trusts must not be able to deliver files just because it's on the same SSID.
 
-Refined behavior — the watcher polls SSID + subnet every ~5 s. If the current network is not in the user's trusted-network list, the device enters **quiet mode**:
+Concretely, the watcher polls SSID + subnet every ~5 s. If the current network is not in the user's trusted-network list, the device enters **quiet mode**:
 
 - **Stop** the mDNS announcer. The device does not broadcast `_sharer._tcp` presence.
-- **Keep** the HTTP server running. Paired peers that already know this device's IP (from peer cache) and pinned cert can still reach it. Layers 2–4 (PSK, HMAC, TLS pinning) remain the security boundary.
+- **Stop** registering the `/pair-invite` route on the HTTP server. LAN-invite pairing requires explicit network trust on both sides.
+- **Keep** the HTTP server bound and the `/upload` route active. Paired peers that already know this device's IP (from peer cache) and pinned cert can still reach it via cached IP. Layers 2–4 (PSK, HMAC, TLS pinning, chunk encryption) remain the security boundary.
 - **Keep** the passive mDNS listener running. If a paired peer is also on this unknown network and announces itself (e.g. because *they* trust this network), we still discover them.
 - Surface a banner: *"On unrecognized network — discoverability off. Paired devices can still reach you."* The banner offers a one-tap "Trust this network" action that adds the current SSID + subnet to the trusted list and resumes announcing.
 
 This means:
 
-- A guest on a strange Wi-Fi can't see your device in their browser, but your laptop at home can still push you a file (it has your IP cached and your cert pinned).
+- A guest on a strange Wi-Fi can't see your device in their browser, but your laptop at home can still push you a file (it has your IP cached and your cert pinned, and signs every chunk with the per-pair key).
 - If you wander into a new network that *is* your friend's home Wi-Fi where you've already paired with their devices, transfers still just work — possibly with some discovery delay until either side trusts the new network and resumes announcing.
 - The trust boundary is the **pairing**, not the network. The watcher is a privacy/discoverability control, not a security control.
+
+#### Asymmetric trust: paired-but-network-untrusted scenarios
+
+A subtle case the model has to get right: A trusts network N; B is paired with A but does *not* trust N; both are on N. A third, unpaired device X on N tries to discover and invite both. Expected behavior:
+
+- X discovers A via mDNS (A announces). X cannot discover B (B does not announce on N).
+- X invites A → A's `/pair-invite` is registered (A trusts N) → A's invite UI fires.
+- X cannot reach B at all on N: B's `/pair-invite` route is unregistered, and X has no mechanism to bypass that.
+- A → B (already paired) transfers continue to work over N because the `/upload` route is always bound and B accepts A's signed, chunk-encrypted requests regardless of B's network trust state.
+
+The right way to read this: from any unpaired observer on N, B simply does not exist on N. The only path to B from outside the existing pair-ring is a future internet relay (post-v1, see open-questions OQ-9).
+
+### 6. Pair invite over the LAN — authenticated DH with fingerprint verification
+
+QR pairing is the primary path. But devices that are already on a trusted network and don't have a camera-to-screen line of sight (two phones across a room, two desktops) need a QR-less path. The naïve approach — "send the PSK over the LAN since it's trusted" — is unacceptable: anyone passively sniffing the LAN, including a malicious ISP technician on a friend's home network the user has trusted, would capture the PSK in plaintext and forge requests forever after.
+
+The protocol used instead is **authenticated Diffie–Hellman with a short verification fingerprint**:
+
+```text
+1. A → B  POST /pair-invite        { A_id, A_name, A_ephemeral_X25519_pubkey, nonce,
+                                     signed by A's long-term Ed25519 key }
+2. B's app surfaces a modal: "Pair with <A_name>?" — Accept / Decline
+3. On Accept, B generates an X25519 ephemeral keypair.
+4. shared = HKDF-SHA256(X25519(B_priv, A_pub) ‖ A_pub ‖ B_pub)
+   → 32 bytes used as the long-term per-pair PSK.
+5. B → A  response                 { B_id, B_name, B_ephemeral_pubkey,
+                                     signed by B's long-term Ed25519 key }
+6. Both sides compute the same PSK and the same 6-digit fingerprint:
+   fingerprint = first 20 bits of HMAC-SHA256(PSK, "verify") rendered as 6 digits.
+7. Both screens display the fingerprint in a modal-blocking sheet.
+   User on each side taps "Matches" or "Doesn't match".
+8. Both confirms received → pair stored on both sides with the same PSK.
+   Either "Doesn't match" or any timeout → both sides discard ephemeral state.
+```
+
+Why this construction:
+
+- **No PSK on the wire.** A passive LAN sniffer learns the public ephemeral keys but cannot derive the shared secret.
+- **MITM detection.** A LAN attacker who relays both halves can establish a separate shared secret with each side, but that produces *two different fingerprints*. Both screens show different numbers, the user notices, both abort.
+- **Identity binding.** Long-term Ed25519 signatures on the invite and response ensure the public ephemeral keys came from the claimed device, not an imposter who copied A's name and IP.
+
+### 7. Long-term device identity (Ed25519 keypair)
+
+Each device generates an Ed25519 keypair on first launch. The private key lives in `flutter_secure_storage` — Keystore-backed on Android, DPAPI-backed on Windows, Keychain-backed on iOS, software on desktop Linux. The deviceId is **derived** from the public key: `deviceId = first 16 hex chars of SHA-256(publicKey)`. Renaming the device does not change the deviceId; resetting the keypair (e.g. user-initiated "factory reset") does, and is treated as a new device.
+
+This replaces the UUID-based deviceId from slices 4.1–4.3. An attacker on the LAN can fabricate any name and IP, but cannot fabricate a matching deviceId without finding a SHA-256 preimage of an existing public key. Every signed request — pairing handshakes, pair invites, file uploads — carries a signature verifiable against the deviceId's underlying public key, which is exchanged at pairing time and pinned alongside the cert fingerprint.
+
+The hot-path file-transfer signature is still HMAC-SHA256 with the per-pair PSK (faster than asymmetric per-request). Pairing-time signatures are the only Ed25519 verifications on the critical path.
+
+**Hardware-backed attestation** (Android Keystore attestation, iOS Secure Enclave, TPM on Windows) is a v2 polish item — it strengthens the "the private key really did come from a non-rooted device" claim. v1 ships with `flutter_secure_storage`'s default backing.
+
+### 8. End-to-end encrypted chunks (slice 5.3)
+
+Per-request HMAC authenticates *who* sent the bytes. It does not encrypt them. Two threats motivate adding chunk-level encryption on top of TLS:
+
+- **(a) Defense-in-depth on a LAN you trust but a third party has tampered with.** Concrete scenario: user marks friend's home Wi-Fi as trusted, ISP technician has previously installed a sniffer on that LAN. TLS protects the byte stream, but a TLS misconfiguration or downgrade on either endpoint exposes plaintext. Per-chunk encryption survives that.
+- **(b) Internet relay (post-v1).** Paired peers across NATs route through a small relay. The relay must never see plaintext. TLS-to-relay is not enough; the relay terminates TLS by definition.
+
+Construction:
+
+```text
+For each transfer:
+  transferKey = HKDF-SHA256(PSK ‖ transferId, info="sharer-transfer-v1", 32 bytes)
+
+For each chunk i (16–64 KB):
+  nonce       = transferId(8B) ‖ chunkIndex(4B) ‖ random(0)  // 12 bytes total
+  ciphertext  = AES-256-GCM(transferKey, nonce, plaintext_chunk, AAD=chunkHeader)
+  wire_chunk  = chunkIndex(4B) ‖ ciphertext_with_tag(N+16B)
+
+Receiver:
+  Verifies chunkIndex monotonic. Decrypts each chunk, streams plaintext to disk.
+  GCM auth tag failure → abort transfer, delete partial file.
+```
+
+Per-chunk auth tags catch single-bit tampering at the granularity of one chunk. Decryption is streaming — plaintext never accumulates in memory. The transferKey lifetime is one transfer; PSK is never used directly to encrypt bytes.
 
 ### Why we kept the watcher at all
 
@@ -82,26 +158,33 @@ It would be defensible to drop the SSID check entirely now that pairing handles 
 
 - Suppressing announcements on unknown networks reduces fingerprinting (no broadcast of "Lenin's iPhone" on a coffee-shop SSID).
 - It avoids unnecessary multicast traffic on networks where there are unlikely to be paired peers.
-- It gives the user a visible, actionable signal ("you're on an unfamiliar network") that encourages them to think before pairing new devices on an untrusted Wi-Fi.
+- It scopes the LAN-invite path (`/pair-invite`) to networks the user has explicitly approved, so an attacker on a hostile Wi-Fi can't even try to invite.
 
 If the watcher proves to add complexity without measurable benefit during v1 implementation, dropping it is a clean follow-up. Document the call as a new OQ if we revisit.
 
 ## Implementation order
 
-1. `_sharer._tcp` service type + SSID/subnet kill-switch (cheap, lets transfers happen at all).
-2. Pairing UI + PSK storage + HMAC signing (before any real-world exposure).
-3. TLS + cert pinning (before v1 ships).
-
-Skipping straight to step 3 isn't worth the up-front cost; do it in order so each step is testable.
+1. ✅ `_sharer._tcp` service type + SSID/subnet trust gate.
+2. ✅ Pairing UI (QR) + PSK storage + HMAC signing (slices 4.1–4.3).
+3. **▶ Pairing-required uploads (slice 4.4).** Server rejects unsigned `/upload` with 401 regardless of network trust.
+4. Long-term Ed25519 device identity (slice 4.5). DeviceId becomes a public-key fingerprint.
+5. LAN pair invite via DH+fingerprint (slice 4.6).
+6. TLS + self-signed cert pinning (slice 5.1).
+7. Background delivery on Android+Windows; iOS deferred (slice 5.2).
+8. End-to-end chunk encryption (slice 5.3).
+9. Forget/rediscover consistency layers (slice 5.4).
+10. OS share-sheet integration (slice 5.5).
 
 ## Key storage
 
-- PSKs and cert private keys: `flutter_secure_storage` (Keystore on Android, DPAPI-backed on Windows).
+- Long-term Ed25519 private key, per-pair PSKs, TLS cert private keys: `flutter_secure_storage` (Keystore-backed on Android, DPAPI-backed on Windows, Keychain-backed on iOS, software-backed on desktop Linux).
 - Cert public material + paired-peer registry: app's secure preferences / sqlite, encrypted at rest by the OS keystore.
 - Peer cache (last-known IPs): plain preferences — no secrets, just routing hints.
 
 ## What this model deliberately does NOT do
 
 - No central account / login. Pairing is purely local.
-- No revocation server. To unpair, the user removes the peer on their device; the other side will start failing HMAC checks (with no surfaced reason) and eventually the user will unpair from that side too.
-- No forward secrecy beyond what TLS provides. Long-term PSK is acceptable for the threat model; rotate on device reset.
+- No revocation server. To unpair, the user removes the peer on their device; slice 5.4's forget/rediscover heuristics surface "this peer seems to have forgotten you" so trust stays bilaterally consistent.
+- No forward secrecy on the long-term per-pair PSK. The per-transfer key is fresh (HKDF over the PSK plus a random transferId), so compromise of one transfer does not compromise others.
+- No "auto-accept invites on trusted networks" toggle, ever. This would collapse the model — any device on the LAN could pair silently.
+- No `/pair-invite` outside trusted networks. Even paired peers cannot issue invites on a network neither side trusts.
