@@ -95,3 +95,9 @@ final peerDiscoveryProvider = Provider<PeerDiscoveryRepository>((ref) {
 final peersStreamProvider = StreamProvider<List<Peer>>((ref) {
   return ref.watch(peerDiscoveryProvider).watchPeers();
 });
+
+/// Reactive view of "are we currently broadcasting?". Diagnostics screen
+/// surfaces this so the trust gate is observable without grepping logs.
+final peerAnnouncingProvider = StreamProvider<bool>((ref) {
+  return ref.watch(peerDiscoveryProvider).watchAnnouncing();
+});

@@ -3,10 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 
-/// Shown when the device is on an unrecognized Wi-Fi. Per the security
-/// model (docs/v1/security.md), discoverability is suppressed on untrusted
-/// networks but paired peers can still reach this device — the banner
-/// communicates that and offers a one-tap "Trust this network" action.
+/// Shown when the device is on an unrecognized network (Wi-Fi or
+/// Ethernet). Per the security model (docs/v1/security.md), discoverability
+/// is suppressed on untrusted networks but paired peers can still reach
+/// this device — the banner communicates that and offers a one-tap "Trust
+/// this network" action.
 class QuietModeBanner extends ConsumerWidget {
   const QuietModeBanner({super.key});
 
@@ -15,7 +16,7 @@ class QuietModeBanner extends ConsumerWidget {
     final isTrusted = ref.watch(isOnTrustedNetworkProvider).valueOrNull ?? false;
     final network = ref.watch(currentNetworkProvider).valueOrNull;
 
-    if (isTrusted || network == null || !network.hasWifi) {
+    if (isTrusted || network == null || !network.hasNetwork) {
       return const SizedBox.shrink();
     }
 

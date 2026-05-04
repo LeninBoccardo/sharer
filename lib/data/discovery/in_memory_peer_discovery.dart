@@ -20,6 +20,9 @@ class InMemoryPeerDiscovery implements PeerDiscoveryRepository {
   }
 
   @override
+  Stream<bool> watchAnnouncing() => Stream<bool>.value(false);
+
+  @override
   Future<void> start() async {
     if (_started) return;
     _started = true;

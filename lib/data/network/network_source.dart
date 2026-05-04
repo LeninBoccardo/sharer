@@ -1,17 +1,20 @@
+import 'dart:io';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:network_info_plus/network_info_plus.dart' as ni;
 
 import '../../domain/entities/network_info.dart';
 
-/// Thin platform abstraction over connectivity_plus + network_info_plus so
-/// the watcher logic in [NetworkWatcherImpl] can be unit-tested without
-/// touching real platform channels.
+/// Thin platform abstraction over connectivity_plus + network_info_plus +
+/// dart:io NetworkInterface so the watcher logic in [NetworkWatcherImpl]
+/// can be unit-tested without touching real platform channels.
 abstract class NetworkSource {
   /// Fires once per connectivity change. Listeners typically call [read]
   /// in response to sample the new network.
   Stream<void> connectivityChanges();
 
-  /// One-shot snapshot of the current Wi-Fi network. Null when not on Wi-Fi.
+  /// One-shot snapshot of the current local network. Null when neither
+  /// Wi-Fi nor Ethernet is available.
   Future<NetworkInfo?> read();
 }
 
@@ -30,15 +33,28 @@ class PlatformNetworkSource implements NetworkSource {
   @override
   Future<NetworkInfo?> read() async {
     final results = await _connectivity.checkConnectivity();
-    if (!results.contains(ConnectivityResult.wifi)) return null;
 
-    final rawSsid = await _wifi.getWifiName();
-    final ipv4 = await _wifi.getWifiIP();
-    return NetworkInfo(
-      ssid: _stripQuotes(rawSsid),
-      ipv4: ipv4,
-      subnet: _deriveSubnet(ipv4),
-    );
+    if (results.contains(ConnectivityResult.wifi)) {
+      final rawSsid = await _wifi.getWifiName();
+      final ipv4 = await _wifi.getWifiIP();
+      return NetworkInfo(
+        linkType: NetworkLinkType.wifi,
+        ssid: _stripQuotes(rawSsid),
+        ipv4: ipv4,
+        subnet: deriveSubnet(ipv4),
+      );
+    }
+
+    if (results.contains(ConnectivityResult.ethernet)) {
+      final ipv4 = await _readEthernetIpv4();
+      return NetworkInfo(
+        linkType: NetworkLinkType.ethernet,
+        ipv4: ipv4,
+        subnet: deriveSubnet(ipv4),
+      );
+    }
+
+    return null;
   }
 
   /// SSIDs from network_info_plus are sometimes returned wrapped in quotes
@@ -53,10 +69,49 @@ class PlatformNetworkSource implements NetworkSource {
 
   /// `192.168.1.34` → `192.168.1.0/24`. Treats /24 as the trust unit, which
   /// matches typical home routers. Returns null on malformed input.
-  static String? _deriveSubnet(String? ipv4) {
+  static String? deriveSubnet(String? ipv4) {
     if (ipv4 == null) return null;
     final parts = ipv4.split('.');
     if (parts.length != 4) return null;
     return '${parts[0]}.${parts[1]}.${parts[2]}.0/24';
+  }
+
+  /// Picks the device's primary IPv4 address from the OS interface list.
+  /// Used when on Ethernet (network_info_plus is Wi-Fi-only). Prefers
+  /// addresses in the standard private ranges to skip virtual adapters
+  /// (Hyper-V, WSL, Docker) that often have non-routable IPs.
+  static Future<String?> _readEthernetIpv4() async {
+    try {
+      final ifaces = await NetworkInterface.list(
+        includeLoopback: false,
+        includeLinkLocal: false,
+        type: InternetAddressType.IPv4,
+      );
+
+      String? fallback;
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          if (addr.isLoopback || addr.isLinkLocal) continue;
+          final s = addr.address;
+          if (_isPrivateIpv4(s)) return s;
+          fallback ??= s;
+        }
+      }
+      return fallback;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _isPrivateIpv4(String ip) {
+    final parts = ip.split('.');
+    if (parts.length != 4) return false;
+    final a = int.tryParse(parts[0]);
+    final b = int.tryParse(parts[1]);
+    if (a == null || b == null) return false;
+    if (a == 10) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    return false;
   }
 }

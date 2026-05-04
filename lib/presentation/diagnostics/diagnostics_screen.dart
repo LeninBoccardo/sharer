@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../domain/entities/device_identity.dart';
+import '../../domain/entities/network_info.dart';
 
 class DiagnosticsScreen extends ConsumerWidget {
   const DiagnosticsScreen({super.key});
@@ -17,6 +18,8 @@ class DiagnosticsScreen extends ConsumerWidget {
           padding: const EdgeInsets.all(20),
           children: const [
             _DeviceCard(),
+            SizedBox(height: 16),
+            _BroadcastingTile(),
             SizedBox(height: 16),
             _CurrentNetworkCard(),
             SizedBox(height: 24),
@@ -124,6 +127,58 @@ class _DeviceCard extends ConsumerWidget {
   }
 }
 
+class _BroadcastingTile extends ConsumerWidget {
+  const _BroadcastingTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final announcing = ref.watch(peerAnnouncingProvider).valueOrNull ?? false;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(
+              announcing ? Icons.podcasts : Icons.podcasts_outlined,
+              color: announcing
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.outline,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Currently broadcasting',
+                      style: theme.textTheme.labelSmall),
+                  const SizedBox(height: 2),
+                  Text(
+                    announcing
+                        ? 'Yes — visible to peers on this network.'
+                        : 'No — quiet mode. Trust this network to broadcast.',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                ],
+              ),
+            ),
+            _Pill(
+              label: announcing ? 'On air' : 'Silent',
+              bg: announcing
+                  ? theme.colorScheme.primaryContainer
+                  : theme.colorScheme.surfaceContainerHighest,
+              fg: announcing
+                  ? theme.colorScheme.onPrimaryContainer
+                  : theme.colorScheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _CurrentNetworkCard extends ConsumerWidget {
   const _CurrentNetworkCard();
 
@@ -141,10 +196,8 @@ class _CurrentNetworkCard extends ConsumerWidget {
           children: [
             Row(
               children: [
-                Icon(
-                  network == null ? Icons.wifi_off : Icons.wifi,
-                  color: theme.colorScheme.primary,
-                ),
+                Icon(_iconForLink(network?.linkType),
+                    color: theme.colorScheme.primary),
                 const SizedBox(width: 10),
                 Text('Current network',
                     style: theme.textTheme.labelSmall),
@@ -153,15 +206,19 @@ class _CurrentNetworkCard extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 12),
-            if (network == null || !network.hasWifi)
+            if (network == null || !network.hasNetwork)
               Text(
-                'Not on Wi-Fi.',
+                'Not connected to a local network.',
                 style: theme.textTheme.bodyMedium
                     ?.copyWith(color: theme.colorScheme.outline),
               )
             else ...[
-              _Kv(label: 'SSID', value: network.ssid ?? '—'),
+              _Kv(label: 'Link', value: _labelForLink(network.linkType)),
               const SizedBox(height: 6),
+              if (network.linkType == NetworkLinkType.wifi) ...[
+                _Kv(label: 'SSID', value: network.ssid ?? '(unknown)'),
+                const SizedBox(height: 6),
+              ],
               _Kv(label: 'IP', value: network.ipv4 ?? '—'),
               const SizedBox(height: 6),
               _Kv(label: 'Subnet', value: network.subnet ?? '—'),
@@ -187,6 +244,29 @@ class _CurrentNetworkCard extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+IconData _iconForLink(NetworkLinkType? t) {
+  switch (t) {
+    case NetworkLinkType.wifi:
+      return Icons.wifi;
+    case NetworkLinkType.ethernet:
+      return Icons.settings_ethernet;
+    case NetworkLinkType.unknown:
+    case null:
+      return Icons.wifi_off;
+  }
+}
+
+String _labelForLink(NetworkLinkType t) {
+  switch (t) {
+    case NetworkLinkType.wifi:
+      return 'Wi-Fi';
+    case NetworkLinkType.ethernet:
+      return 'Ethernet';
+    case NetworkLinkType.unknown:
+      return 'Unknown';
   }
 }
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:bonsoir/bonsoir.dart';
 
@@ -19,6 +20,7 @@ import '../../domain/repositories/peer_discovery_repository.dart';
 class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   static const serviceType = '_sharer._tcp';
   static const _kDeviceIdAttr = 'deviceId';
+  static const _logName = 'sharer.discovery';
 
   /// Port we will eventually run the HTTP server on. Slice 3 will start the
   /// server here; until then this is the advertised endpoint only.
@@ -34,7 +36,9 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
 
   final Map<String, Peer> _peers = {};
   final _peersController = StreamController<List<Peer>>.broadcast();
+  final _announcingController = StreamController<bool>.broadcast();
   List<Peer> _latest = const [];
+  bool _announcing = false;
   bool _started = false;
 
   MdnsPeerDiscovery({
@@ -50,10 +54,17 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   }
 
   @override
+  Stream<bool> watchAnnouncing() async* {
+    yield _announcing;
+    yield* _announcingController.stream;
+  }
+
+  @override
   Future<void> start() async {
     if (_started) return;
     _started = true;
 
+    developer.log('Starting discovery for $serviceType', name: _logName);
     _discovery = BonsoirDiscovery(type: serviceType);
     await _discovery!.ready;
     await _discovery!.start();
@@ -67,6 +78,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     if (!_started) return;
     _started = false;
 
+    developer.log('Stopping discovery + broadcast', name: _logName);
     await _announceSub?.cancel();
     _announceSub = null;
     await _stopBroadcast();
@@ -83,9 +95,11 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   Future<void> dispose() async {
     await stop();
     await _peersController.close();
+    await _announcingController.close();
   }
 
   Future<void> _onAnnounceFlag(bool announce) async {
+    developer.log('Announce flag → $announce', name: _logName);
     if (announce) {
       await _startBroadcast();
     } else {
@@ -96,6 +110,10 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   Future<void> _startBroadcast() async {
     if (_broadcast != null) return;
     final identity = await _identityRepo.get();
+    developer.log(
+      'Starting broadcast: name="${identity.name}" id=${identity.id} port=$advertisedPort',
+      name: _logName,
+    );
     final service = BonsoirService(
       name: identity.name,
       type: serviceType,
@@ -106,13 +124,22 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     await broadcast.ready;
     await broadcast.start();
     _broadcast = broadcast;
+    _setAnnouncing(true);
   }
 
   Future<void> _stopBroadcast() async {
     final b = _broadcast;
     if (b == null) return;
     _broadcast = null;
+    developer.log('Stopping broadcast', name: _logName);
     await b.stop();
+    _setAnnouncing(false);
+  }
+
+  void _setAnnouncing(bool value) {
+    if (_announcing == value) return;
+    _announcing = value;
+    _announcingController.add(value);
   }
 
   Future<void> _onDiscoveryEvent(BonsoirDiscoveryEvent event) async {
