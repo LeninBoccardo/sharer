@@ -57,6 +57,12 @@ dependencies:
   # HMAC-SHA256 for the X-Sharer-Sig request authentication header.
   crypto: ^3.0.6
 
+  # Pairing UI: render the QR offer on the initiator, scan it on the
+  # responder. mobile_scanner is camera-based; on desktops without a
+  # camera we fall back to the typed-code entry.
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.3
+
   # Stable random device IDs.
   uuid: ^4.5.1
 

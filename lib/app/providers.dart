@@ -11,6 +11,8 @@ import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
 import '../data/security/hmac_verifier.dart';
 import '../data/security/paired_devices_store.dart';
+import '../data/security/pairing_client.dart';
+import '../data/security/pairing_service.dart';
 import '../data/security/secure_key_value_store.dart';
 import '../data/storage/downloads_locator.dart';
 import '../data/storage/peer_cache_store.dart';
@@ -111,10 +113,38 @@ final pairedDevicesStreamProvider = StreamProvider<List<PairedDevice>>((ref) {
   return ref.watch(pairedDevicesRepoProvider).watch();
 });
 
+/// Derived view used by the peer list to badge already-paired peers.
+/// Empty when paired devices haven't loaded yet — the tile just shows
+/// the unpaired state until then.
+final pairedDeviceIdsProvider = Provider<Set<String>>((ref) {
+  final list = ref.watch(pairedDevicesStreamProvider).value ?? const [];
+  return {for (final d in list) d.deviceId};
+});
+
 /// Server-side HMAC validator. The same instance is used for the whole
 /// app lifetime so its replay-buffer state survives across requests.
 final hmacVerifierProvider = Provider<HmacVerifier>((ref) {
   return HmacVerifier(ref.watch(pairedDevicesRepoProvider));
+});
+
+/// Coordinates the pairing handshake on both sides — owns the active
+/// offer registry on the initiator, and stores the initiator on the
+/// responder once the network round-trip succeeds. Single instance
+/// per app session so the offer registry doesn't get cleared between
+/// the show-pair screen mounting and the responder's POST arriving.
+final pairingServiceProvider = Provider<PairingService>((ref) {
+  final svc = PairingService(
+    ref.watch(pairedDevicesRepoProvider),
+    ref.watch(deviceIdentityRepoProvider),
+  );
+  ref.onDispose(svc.dispose);
+  return svc;
+});
+
+final pairingClientProvider = Provider<PairingClient>((ref) {
+  final client = PairingClient();
+  ref.onDispose(client.close);
+  return client;
 });
 
 /// Production mDNS backend. Override with FakeMdnsBackend in tests so
@@ -159,6 +189,7 @@ final httpFileServerProvider = Provider<HttpFileServer>((ref) {
     downloads: ref.watch(downloadsLocatorProvider),
     isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
     verifier: ref.watch(hmacVerifierProvider),
+    pairing: ref.watch(pairingServiceProvider),
   );
   ref.onDispose(server.dispose);
   server.start();

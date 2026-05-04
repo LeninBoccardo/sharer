@@ -7,6 +7,7 @@ import '../../app/providers.dart';
 import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/peer.dart';
 import '../diagnostics/diagnostics_screen.dart';
+import '../pairing/devices_screen.dart';
 import '../transfers/transfers_section.dart';
 import 'quiet_mode_banner.dart';
 
@@ -23,6 +24,15 @@ class HomeScreen extends ConsumerWidget {
         title: const Text('Sharer'),
         centerTitle: false,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.devices),
+            tooltip: 'Paired devices',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const DevicesScreen(),
+              ),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.tune),
             tooltip: 'You & networks',
@@ -124,6 +134,8 @@ class _PeerTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final pairedIds = ref.watch(pairedDeviceIdsProvider);
+    final isPaired = pairedIds.contains(peer.id);
     return Card(
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -132,12 +144,19 @@ class _PeerTile extends ConsumerWidget {
           child: Icon(Icons.devices,
               color: theme.colorScheme.onPrimaryContainer),
         ),
-        title: Text(peer.name),
+        title: Row(
+          children: [
+            Flexible(child: Text(peer.name)),
+            if (isPaired) ...[
+              const SizedBox(width: 8),
+              Icon(Icons.verified_user,
+                  size: 16, color: theme.colorScheme.primary),
+            ],
+          ],
+        ),
         subtitle:
             Text(peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…'),
-        trailing: peer.isPaired
-            ? Icon(Icons.verified_user, color: theme.colorScheme.primary)
-            : const Icon(Icons.send),
+        trailing: const Icon(Icons.send),
         onTap: peer.isReachable ? () => _pickAndSend(context, ref) : null,
       ),
     );

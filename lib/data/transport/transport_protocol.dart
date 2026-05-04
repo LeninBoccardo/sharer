@@ -8,6 +8,12 @@ abstract final class TransportProtocol {
   static const int defaultPort = 8080;
   static const String uploadPath = '/upload';
 
+  /// One-time pairing-completion endpoint (slice 4.3). The initiator's
+  /// HTTP server accepts a single signed POST here from the responder
+  /// after a QR scan or numeric-code entry, and uses it to register the
+  /// responder as a paired peer.
+  static const String pairPath = '/pair';
+
   /// URL-encoded filename. Decoded with [Uri.decodeComponent] on the
   /// server. Required.
   static const String headerFileName = 'x-sharer-filename';
@@ -36,6 +42,18 @@ abstract final class TransportProtocol {
   static const String headerNonce = 'x-sharer-nonce';
 
   /// Base64 HMAC-SHA256 over the canonical string built from the other
-  /// fields, using the receiver's per-pair PSK.
+  /// fields, using the receiver's per-pair PSK. Reused by /pair where
+  /// the canonical string is `POST\n/pair\n<offerId>\n<responderId>\n<code>`
+  /// signed with the offer's ephemeral PSK.
   static const String headerSignature = 'x-sharer-sig';
+
+  // ---- Slice 4.3: pairing-completion headers, used only on /pair. ----
+
+  /// The offer id from the QR / typed code. Identifies which active
+  /// offer the initiator should validate against.
+  static const String headerPairOfferId = 'x-sharer-pair-offer-id';
+
+  /// The 6-digit numeric code from the same QR. Bound to the offer id;
+  /// rejected if it doesn't match the offer's stored code.
+  static const String headerPairCode = 'x-sharer-pair-code';
 }

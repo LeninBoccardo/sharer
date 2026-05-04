@@ -10,6 +10,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:uuid/uuid.dart';
 
 import '../security/hmac_verifier.dart';
+import '../security/pairing_service.dart';
 import '../storage/downloads_locator.dart';
 import 'incoming_event.dart';
 import 'transport_protocol.dart';
@@ -28,6 +29,7 @@ class HttpFileServer {
   final DownloadsLocator _downloads;
   final Stream<bool> _isTrusted;
   final HmacVerifier? _verifier;
+  final PairingService? _pairing;
   final int _port;
   final Uuid _uuid;
 
@@ -44,11 +46,13 @@ class HttpFileServer {
     required DownloadsLocator downloads,
     required Stream<bool> isTrusted,
     HmacVerifier? verifier,
+    PairingService? pairing,
     int port = TransportProtocol.defaultPort,
     Uuid? uuid,
   })  : _downloads = downloads,
         _isTrusted = isTrusted,
         _verifier = verifier,
+        _pairing = pairing,
         _port = port,
         _uuid = uuid ?? const Uuid();
 
@@ -128,6 +132,9 @@ class HttpFileServer {
     _log('Binding HTTP server on port $_port');
     final router = Router();
     router.post(TransportProtocol.uploadPath, _handleUpload);
+    if (_pairing != null) {
+      router.post(TransportProtocol.pairPath, _handlePair);
+    }
     final handler = const Pipeline().addHandler(router.call);
     try {
       _httpServer = await shelf_io.serve(handler, InternetAddress.anyIPv4, _port);
@@ -243,6 +250,45 @@ class HttpFileServer {
       _events.add(IncomingFailed(id: id, error: e.toString()));
       return Response.internalServerError(body: e.toString());
     }
+  }
+
+  Future<Response> _handlePair(Request request) async {
+    final pairing = _pairing!;
+    final headers = request.headers;
+    final responderId = headers[TransportProtocol.headerDeviceId];
+    final responderName =
+        _decodeHeader(headers[TransportProtocol.headerDeviceName]) ??
+            'Unknown device';
+    final offerId = headers[TransportProtocol.headerPairOfferId];
+    final code = headers[TransportProtocol.headerPairCode];
+    final signature = headers[TransportProtocol.headerSignature];
+
+    if (responderId == null ||
+        responderId.isEmpty ||
+        offerId == null ||
+        offerId.isEmpty ||
+        code == null ||
+        code.isEmpty ||
+        signature == null ||
+        signature.isEmpty) {
+      _log('Reject pair: missing required headers');
+      await request.read().drain<void>();
+      return Response.unauthorized('');
+    }
+
+    final paired = await pairing.completePair(
+      offerId: offerId,
+      numericCode: code,
+      responderId: responderId,
+      responderName: responderName,
+      signature: signature,
+    );
+    await request.read().drain<void>();
+    if (paired == null) return Response.unauthorized('');
+    return Response.ok(
+      jsonEncode({'pairedAs': paired.deviceId}),
+      headers: {'content-type': 'application/json'},
+    );
   }
 
   static String? _decodeHeader(String? value) {
