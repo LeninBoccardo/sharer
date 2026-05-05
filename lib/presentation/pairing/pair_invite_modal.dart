@@ -172,7 +172,7 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
     final controller = ref.read(inviteControllerProvider);
     try {
       await controller.finalize(
-        invite: _current,
+        inviteId: _current.inviteId,
         peer: widget.peer,
         match: match,
       );

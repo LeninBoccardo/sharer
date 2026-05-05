@@ -48,6 +48,11 @@ Future<void> main() async {
   // close-to-tray prevent flag before the first frame paints.
   // Controller is platform-gated so this is a no-op on non-Windows.
   container.read(windowsTrayControllerProvider);
+  // Slice 5.2.4: subscribes to the foreground notification-response
+  // stream + queries `getNotificationAppLaunchDetails()` once for
+  // cold-start routing. Must come after the service init above so
+  // the stream is wired before the launch-details read.
+  container.read(notificationRouterProvider);
 
   runApp(
     UncontrolledProviderScope(

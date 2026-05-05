@@ -7,6 +7,16 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'notification_channels.dart';
 
+/// Slice 5.2.4: details captured at app boot if the launch was
+/// triggered by a notification tap / action while the app was
+/// killed. The router consumes this once the first frame is up and
+/// routes to the appropriate destination.
+class NotificationLaunch {
+  const NotificationLaunch({required this.payload, required this.actionId});
+  final String? payload;
+  final String? actionId;
+}
+
 /// Stable Windows AppUserModelId. Re-used in any future Windows-side
 /// branding (tray app id, single-instance lock). Format follows the
 /// Microsoft guidance `<CompanyName>.<ProductName>.<SubProduct>`.
@@ -33,6 +43,14 @@ class NotificationService {
 
   final FlutterLocalNotificationsPlugin _plugin;
   bool _initialized = false;
+
+  /// Slice 5.2.4: foreground notification responses (body taps + action
+  /// button presses). The router subscribes to drive navigation +
+  /// invoke decline flows. Broadcast so multiple listeners can react
+  /// — currently only the router, but a future analytics hook would
+  /// fit too.
+  final _responses = StreamController<NotificationResponse>.broadcast();
+  Stream<NotificationResponse> get responses => _responses.stream;
 
   /// Initialise channels + the platform plugin. Idempotent — safe to
   /// call from `main()` and again from a unit test setUp.
@@ -68,10 +86,38 @@ class NotificationService {
         linux: linuxInit,
         windows: windowsInit,
       ),
+      onDidReceiveNotificationResponse: (response) {
+        // Foreground responses arrive here. Forward to the broadcast
+        // stream so the router can route. We deliberately do not
+        // wire `onDidReceiveBackgroundNotificationResponse` — that
+        // would pull in a separate Dart isolate with its own
+        // composition root, which is overkill while every action we
+        // support either shows the UI or runs cheaply via the same
+        // process the FG service is keeping alive.
+        _log('response action=${response.actionId} '
+            'payload=${response.payload}');
+        _responses.add(response);
+      },
     );
 
     await _createAndroidChannels();
     _log('init complete');
+  }
+
+  /// Slice 5.2.4: returns the launch context if the app was opened
+  /// from a notification while killed; otherwise null. Called once at
+  /// app boot by the router after [init] completes.
+  Future<NotificationLaunch?> readLaunchDetails() async {
+    final details = await _plugin.getNotificationAppLaunchDetails();
+    if (details == null || !details.didNotificationLaunchApp) return null;
+    final response = details.notificationResponse;
+    if (response == null) return null;
+    _log('cold-start launch action=${response.actionId} '
+        'payload=${response.payload}');
+    return NotificationLaunch(
+      payload: response.payload,
+      actionId: response.actionId,
+    );
   }
 
   /// Android 13+ POST_NOTIFICATIONS runtime permission. Returns the
@@ -94,6 +140,13 @@ class NotificationService {
     required int bytesTransferred,
     required int totalBytes,
   }) async {
+    // Slice 5.2.4 fix: skip the in-flight toast on Windows. The
+    // package's `cancel()` doesn't remove an Action Center toast
+    // reliably, so we'd end up with two stacked toasts (in-flight +
+    // done) by the end of the transfer. The Windows tray + the
+    // transfer-done toast are sufficient — progress is visible
+    // in-app via the Transfers section.
+    if (Platform.isWindows) return;
     final progress =
         totalBytes > 0 ? (bytesTransferred * 100 ~/ totalBytes) : 0;
     final indeterminate = totalBytes <= 0;
@@ -142,16 +195,42 @@ class NotificationService {
       id: NotificationIdSpace.transferDone(transferId),
       title: 'Saved $fileName',
       body: 'Tap to open • Saved to Downloads',
-      notificationDetails: const NotificationDetails(
-        android: AndroidNotificationDetails(
+      notificationDetails: NotificationDetails(
+        android: const AndroidNotificationDetails(
           TransferDoneChannel.id,
           TransferDoneChannel.name,
           channelDescription: TransferDoneChannel.description,
           importance: Importance.defaultImportance,
           priority: Priority.defaultPriority,
           category: AndroidNotificationCategory.status,
+          actions: [
+            // showsUserInterface=false: the action invokes our handler
+            // which then launches the file via the OS default app —
+            // we don't need to bring the Sharer activity forward to
+            // do that.
+            AndroidNotificationAction(
+              NotificationActions.transferOpen,
+              'Open',
+              showsUserInterface: false,
+            ),
+          ],
         ),
-        iOS: DarwinNotificationDetails(),
+        iOS: const DarwinNotificationDetails(),
+        // Slice 5.2.4 fix: Windows toast responses report the
+        // launch-arguments string in BOTH `actionId` and `payload`,
+        // discarding the toast's own payload field. So we encode
+        // the file path inline as `transfer_open|<path>` — the
+        // router parses the suffix on Windows and falls back to the
+        // payload-based path on Android.
+        windows: WindowsNotificationDetails(
+          actions: [
+            WindowsAction(
+              content: 'Open',
+              arguments: '${NotificationActions.transferOpen}|$savedPath',
+              activationType: WindowsActivationType.foreground,
+            ),
+          ],
+        ),
       ),
       payload: 'transfer_done:$transferId|$savedPath',
     );
@@ -191,16 +270,50 @@ class NotificationService {
       id: NotificationIdSpace.pairInvite(inviteId),
       title: 'Pair with $peerName?',
       body: 'Verify code: $spaced',
-      notificationDetails: const NotificationDetails(
-        android: AndroidNotificationDetails(
+      notificationDetails: NotificationDetails(
+        android: const AndroidNotificationDetails(
           PairInviteChannel.id,
           PairInviteChannel.name,
           channelDescription: PairInviteChannel.description,
           importance: Importance.high,
           priority: Priority.high,
           category: AndroidNotificationCategory.message,
+          actions: [
+            AndroidNotificationAction(
+              NotificationActions.inviteView,
+              'View',
+              showsUserInterface: true,
+            ),
+            // showsUserInterface=false: decline runs entirely in the
+            // backgrounded process — no need to surface the modal
+            // just to confirm a no.
+            AndroidNotificationAction(
+              NotificationActions.inviteReject,
+              'Decline',
+              showsUserInterface: false,
+            ),
+          ],
         ),
-        iOS: DarwinNotificationDetails(),
+        iOS: const DarwinNotificationDetails(),
+        // Same Windows-quirk encoding as transfer-open above — the
+        // arguments string is what comes back as both actionId and
+        // payload, so we inline the invite id.
+        windows: WindowsNotificationDetails(
+          actions: [
+            WindowsAction(
+              content: 'View',
+              arguments: '${NotificationActions.inviteView}|$inviteId',
+              activationType: WindowsActivationType.foreground,
+            ),
+            // No Decline button on Windows. Toast activation is
+            // limited to foreground / protocol; there's no
+            // run-in-background-without-restoring-window primitive,
+            // so a Decline button would have to bring the window
+            // forward — defeating the purpose. The toast's natural
+            // dismiss (X on the toast / clear from Action Center)
+            // simply lets the invite expire.
+          ],
+        ),
       ),
       payload: 'pair_invite:$inviteId',
     );
@@ -211,6 +324,10 @@ class NotificationService {
 
   Future<void> cancelPairInvite(String inviteId) =>
       _plugin.cancel(id: NotificationIdSpace.pairInvite(inviteId));
+
+  Future<void> dispose() async {
+    await _responses.close();
+  }
 
   Future<void> _createAndroidChannels() async {
     if (!Platform.isAndroid) return;

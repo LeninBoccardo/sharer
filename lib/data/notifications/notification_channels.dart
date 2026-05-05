@@ -45,6 +45,25 @@ class PairInviteChannel {
       'Another device on this Wi-Fi wants to pair with Sharer.';
 }
 
+/// Slice 5.2.4: stable action ids embedded in notification action
+/// buttons. The plugin echoes these back via [NotificationResponse.actionId]
+/// when the user taps a button so the router can dispatch.
+class NotificationActions {
+  /// Transfer-done notification → "Open" → launches the saved file in
+  /// the OS default handler.
+  static const transferOpen = 'transfer_open';
+
+  /// Pair-invite notification → "View" → opens the fingerprint modal.
+  /// Body taps route to the same place; the explicit button gives a
+  /// keyboard / accessibility-friendly target.
+  static const inviteView = 'invite_view';
+
+  /// Pair-invite notification → "Decline" → invokes the decline flow
+  /// without opening any UI. The user gets to refuse a pairing
+  /// request straight from the lock screen.
+  static const inviteReject = 'invite_reject';
+}
+
 /// Notification id namespacing. Keep them in disjoint integer ranges so
 /// a transfer-active and a pair-invite for the same string id don't
 /// collide on `cancel(id)`.

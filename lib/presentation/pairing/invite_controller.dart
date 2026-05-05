@@ -119,27 +119,33 @@ class InviteController {
   /// finalize body and posts it to the peer. Local state has already
   /// been updated by [PairInviteService] before the POST goes out, so
   /// even if the peer is unreachable our side knows the verdict.
+  ///
+  /// [peer] is optional — slice 5.1.2 captures the peer's source IP
+  /// at the responder's `/pair-invite` handler, so the responder
+  /// path doesn't need a `Peer` from mDNS in hand. When [peer] is
+  /// null and there's no captured host either, the POST is skipped
+  /// (local state still flips). The slice 5.2.4 router uses this
+  /// path for notification-driven decline.
   Future<void> finalize({
-    required PairInvite invite,
+    required String inviteId,
     required Peer? peer,
     required bool match,
   }) async {
     final identity = await _identityRepo.get();
-    final peerCertFp =
-        _service.peerCertFingerprintFor(invite.inviteId);
+    final peerCertFp = _service.peerCertFingerprintFor(inviteId);
     // Slice 5.1.2: prefer the source-IP captured by the HTTP server
     // when /pair-invite landed (responder side). Falls back to mDNS
     // peer.host on the initiator side, where we don't have a captured
     // IP but already used `peer.host` to send the original invite, so
     // we know it routes.
-    final capturedHost = _service.peerHostFor(invite.inviteId);
+    final capturedHost = _service.peerHostFor(inviteId);
     final host = capturedHost ?? peer?.host;
     final port = peer?.port ?? TransportProtocol.defaultPort;
     final signed = match
-        ? await _service.markLocalMatched(invite.inviteId)
-        : await _service.markLocalDeclined(invite.inviteId);
+        ? await _service.markLocalMatched(inviteId)
+        : await _service.markLocalDeclined(inviteId);
     if (signed == null) {
-      _log('finalize no-op: no in-flight ${invite.inviteId}');
+      _log('finalize no-op: no in-flight $inviteId');
       return;
     }
     if (host == null) {
@@ -151,13 +157,13 @@ class InviteController {
       // Should never happen if the invite was emitted by the service —
       // log + skip rather than crash. The peer's TTL will clean up.
       _log('finalize skip POST: missing peer cert fingerprint for '
-          '${invite.inviteId}');
+          '$inviteId');
       return;
     }
     await _client.postFinalize(
       host: host,
       port: port,
-      inviteId: invite.inviteId,
+      inviteId: inviteId,
       senderId: identity.id,
       verdict: match ? 'match' : 'decline',
       signatureBase64: signed.signatureBase64,

@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/discovery/bonsoir_mdns_backend.dart';
@@ -12,6 +13,7 @@ import '../data/network/trusted_networks_store.dart';
 import '../data/notifications/foreground_service_controller.dart';
 import '../data/notifications/foreground_service_gateway.dart';
 import '../data/notifications/notification_coordinator.dart';
+import '../data/notifications/notification_router.dart';
 import '../data/notifications/notification_service.dart';
 import '../data/notifications/windows_tray_controller.dart';
 import '../data/security/hmac_verifier.dart';
@@ -360,4 +362,24 @@ final windowsTrayControllerProvider =
   ref.onDispose(controller.dispose);
   controller.start();
   return controller;
+});
+
+/// Slice 5.2.4: dispatches notification taps + action buttons. Reads
+/// the cold-start launch details on construction and routes
+/// accordingly. Reading this provider also subscribes to the
+/// foreground response stream.
+final notificationRouterProvider =
+    Provider<NotificationRouter>((ref) {
+  final tray = ref.watch(windowsTrayControllerProvider);
+  final router = NotificationRouter(
+    service: ref.watch(notificationServiceProvider),
+    inviteController: ref.watch(inviteControllerProvider),
+    openFile: (path) async {
+      await OpenFilex.open(path);
+    },
+    showMainWindow: tray.showMainWindow,
+  );
+  ref.onDispose(router.dispose);
+  router.start();
+  return router;
 });

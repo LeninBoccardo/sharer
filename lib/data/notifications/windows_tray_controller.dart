@@ -105,6 +105,14 @@ class WindowsTrayController with TrayListener, WindowListener {
     await windowManager.focus();
   }
 
+  /// Slice 5.2.4: exposed for the [NotificationRouter] so it can
+  /// bring the window forward when a notification action that needs
+  /// UI fires while the window is hidden to tray.
+  Future<void> showMainWindow() async {
+    if (!Platform.isWindows) return;
+    await _restoreWindow();
+  }
+
   Future<void> _quit() async {
     _quitting = true;
     // Re-enable the default close behaviour so destroy() actually
