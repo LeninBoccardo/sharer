@@ -16,6 +16,8 @@ import '../data/security/paired_devices_store.dart';
 import '../data/security/pairing_client.dart';
 import '../data/security/pairing_service.dart';
 import '../data/security/secure_key_value_store.dart';
+import '../data/security/tls_key_material.dart';
+import '../data/security/tls_key_material_store.dart';
 import '../data/storage/downloads_locator.dart';
 import '../data/storage/peer_cache_store.dart';
 import '../data/transport/http_file_client.dart';
@@ -68,6 +70,32 @@ final deviceIdentityRepoProvider = Provider<DeviceIdentityRepository>((ref) {
       }
     },
   );
+});
+
+/// Slice 5.1: lazy-initialised store for the device's self-signed TLS
+/// keypair + cert. First read on any device generates fresh material
+/// and persists the cert to prefs + private key to secure storage.
+final tlsKeyMaterialStoreProvider = Provider<TlsKeyMaterialStore>((ref) {
+  return TlsKeyMaterialStore(
+    ref.watch(sharedPreferencesProvider),
+    secure: ref.watch(secureKeyValueStoreProvider),
+    onReset: () async {
+      // If the TLS material is regenerated (corruption recovery,
+      // factory reset), every existing PairedDevice entry has a
+      // pinned cert fingerprint that no longer matches — so wipe
+      // them. Same posture as the Ed25519-identity migration.
+      final paired = ref.read(pairedDevicesRepoProvider);
+      for (final d in await paired.getAll()) {
+        await paired.remove(d.deviceId);
+      }
+    },
+  );
+});
+
+/// FutureProvider for UI consumers — the underlying store generates
+/// material lazily on first read.
+final tlsKeyMaterialProvider = FutureProvider<TlsKeyMaterial>((ref) {
+  return ref.watch(tlsKeyMaterialStoreProvider).get();
 });
 
 /// Convenience FutureProvider for UI consumers that want the resolved
@@ -192,6 +220,7 @@ final inviteControllerProvider = Provider<InviteController>((ref) {
     service: ref.watch(pairInviteServiceProvider),
     client: ref.watch(pairInviteClientProvider),
     identityRepo: ref.watch(deviceIdentityRepoProvider),
+    tlsStore: ref.watch(tlsKeyMaterialStoreProvider),
   );
 });
 
@@ -228,10 +257,11 @@ final downloadsLocatorProvider = Provider<DownloadsLocator>((ref) {
   return PlatformDownloadsLocator();
 });
 
-/// HTTP server gated on trust. Runs only when on a trusted network. With
-/// slice 4.2 the server also validates X-Sharer-Sig on every upload that
-/// carries one — paired peers are gated by HMAC, unsigned uploads still
-/// fall through to the trust-network gate (slice 4.3 will tighten this).
+/// Always-on HTTPS server (slice 5.1). Bound for the lifetime of the
+/// app; trust transitions only flip whether the pair routes (`/pair`,
+/// `/pair-invite`, `/pair-finalize`) accept requests. `/upload` is
+/// always reachable but gated by HMAC-from-a-paired-peer — see
+/// docs/v1/security.md §5.
 final httpFileServerProvider = Provider<HttpFileServer>((ref) {
   final server = HttpFileServer(
     downloads: ref.watch(downloadsLocatorProvider),
@@ -239,6 +269,7 @@ final httpFileServerProvider = Provider<HttpFileServer>((ref) {
     verifier: ref.watch(hmacVerifierProvider),
     pairing: ref.watch(pairingServiceProvider),
     invite: ref.watch(pairInviteServiceProvider),
+    tlsMaterial: ref.watch(tlsKeyMaterialStoreProvider).get(),
   );
   ref.onDispose(server.dispose);
   server.start();

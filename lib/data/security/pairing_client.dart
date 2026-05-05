@@ -10,6 +10,7 @@ import '../../domain/entities/pairing_offer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
 import '../transport/transport_protocol.dart';
 import 'pairing_service.dart';
+import 'pinning_http_client.dart';
 
 /// Outcome of the responder-side /pair POST.
 enum PairingPostResult {
@@ -27,14 +28,19 @@ const _defaultPerEndpointTimeout = Duration(seconds: 4);
 
 /// Responder-side HTTP client for the /pair handshake. Separate from
 /// [HttpFileClient] so the pairing path doesn't drag the upload code
-/// down with it (and so we can swap the transport for TLS in slice 5
-/// without touching transfers).
+/// down with it.
+///
+/// **Slice 5.1 — TLS:** when [_overrideHttpClient] is null (production)
+/// each [postCompletion] call builds a fresh single-use [HttpClient]
+/// that pins against the initiator's TLS cert fingerprint carried in
+/// the offer. Tests can opt out of TLS by passing an explicit plain
+/// [HttpClient] to the constructor.
 class PairingClient {
   static const _logName = 'sharer.security.pairing.client';
 
-  final HttpClient _http;
+  final HttpClient? _overrideHttpClient;
 
-  PairingClient([HttpClient? http]) : _http = http ?? HttpClient();
+  PairingClient([HttpClient? http]) : _overrideHttpClient = http;
 
   /// POSTs the completion handshake to one of the offer's endpoints. The
   /// initiator embeds every local IPv4 because we can't tell up-front
@@ -50,10 +56,15 @@ class PairingClient {
   /// endpoint fails at the socket layer, return networkError. Mixed
   /// malformed+networkError counts as networkError so the user sees the
   /// more specific "we couldn't reach the device" message.
+  /// [localCertFingerprintSha256] is the responder's own TLS cert
+  /// fingerprint — sent in [TransportProtocol.headerCertFingerprint]
+  /// so the initiator can pin it on the resulting [PairedDevice] for
+  /// future hot-path /upload pinning. Required since slice 5.1.
   Future<PairingPostResult> postCompletion({
     required PairingOffer offer,
     required DeviceIdentity responder,
     required DeviceIdentityRepository identityRepo,
+    required String localCertFingerprintSha256,
     Duration perEndpointTimeout = _defaultPerEndpointTimeout,
   }) async {
     if (offer.endpoints.isEmpty) {
@@ -70,6 +81,9 @@ class PairingClient {
     final identitySig = base64Encode(await identityRepo.sign(canonicalBytes));
     final pubKey = base64Encode(responder.publicKey);
 
+    final useTls = _overrideHttpClient == null;
+    final scheme = useTls ? 'https' : 'http';
+
     var sawNetworkError = false;
     var sawMalformed = false;
     for (final endpoint in offer.endpoints) {
@@ -80,10 +94,18 @@ class PairingClient {
         continue;
       }
       final uri = Uri.parse(
-          'http://${parsed.host}:${parsed.port}${TransportProtocol.pairPath}');
+          '$scheme://${parsed.host}:${parsed.port}${TransportProtocol.pairPath}');
       _log('POST $uri offerId=${offer.offerId}');
+      // Production: build a one-shot pinning HttpClient against the
+      // initiator's cert fingerprint carried in the QR offer. Tests
+      // injected a plain HttpClient at construction; reuse it.
+      final http = _overrideHttpClient ??
+          buildPinningHttpClient(
+            expectedFingerprint: offer.initiatorCertFingerprintSha256,
+          );
+      final ownsClient = _overrideHttpClient == null;
       try {
-        final req = await _http.postUrl(uri).timeout(perEndpointTimeout);
+        final req = await http.postUrl(uri).timeout(perEndpointTimeout);
         req.headers.contentLength = 0;
         req.headers.set(TransportProtocol.headerDeviceId, responder.id);
         req.headers.set(
@@ -96,6 +118,10 @@ class PairingClient {
         req.headers.set(TransportProtocol.headerPublicKey, pubKey);
         req.headers
             .set(TransportProtocol.headerIdentitySignature, identitySig);
+        req.headers.set(
+          TransportProtocol.headerCertFingerprint,
+          localCertFingerprintSha256,
+        );
         final resp = await req.close().timeout(perEndpointTimeout);
         await resp.drain<void>();
         _log('response ${resp.statusCode} from $endpoint');
@@ -107,6 +133,8 @@ class PairingClient {
             error: e, stackTrace: st, name: _logName);
         _log('network error on $endpoint: $e');
         sawNetworkError = true;
+      } finally {
+        if (ownsClient) http.close(force: true);
       }
     }
     if (sawNetworkError) return PairingPostResult.networkError;
@@ -125,7 +153,7 @@ class PairingClient {
   }
 
   void close() {
-    _http.close(force: true);
+    _overrideHttpClient?.close(force: true);
   }
 
   void _log(String message) {

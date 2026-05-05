@@ -35,7 +35,10 @@ void main() {
       isTrusted: trust.stream,
       port: 0,
     );
-    client = HttpFileClient();
+    // Tests run against a plain-HTTP server (no TLS material wired).
+    // Inject a plain HttpClient so the production pinning path is
+    // skipped; otherwise the client tries HTTPS against an HTTP socket.
+    client = HttpFileClient(httpClient: HttpClient());
     await server.start();
     trust.add(true);
     await _settle();
@@ -122,7 +125,7 @@ void main() {
       verifier: HmacVerifier(paired),
       port: 0,
     );
-    client = HttpFileClient();
+    client = HttpFileClient(httpClient: HttpClient());
     await server.start();
     trust.add(true);
     await _settle();
@@ -173,7 +176,7 @@ void main() {
       verifier: HmacVerifier(paired),
       port: 0,
     );
-    client = HttpFileClient();
+    client = HttpFileClient(httpClient: HttpClient());
     await server.start();
     trust.add(true);
     await _settle();

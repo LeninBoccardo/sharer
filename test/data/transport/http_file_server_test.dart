@@ -136,8 +136,12 @@ Uint8List _stubPub(int seed) => Uint8List.fromList(
     List<int>.generate(32, (i) => (200 + seed + i) & 0xff));
 
 void main() {
-  group('HttpFileServer — trust gating', () {
-    test('does not bind on untrusted', () async {
+  group('HttpFileServer — always-on (slice 5.1)', () {
+    test('binds on start regardless of trust state', () async {
+      // Slice 5.1 changed the server to bind once on start() and stay
+      // bound across trust transitions. Trust only gates the pair
+      // routes, not the socket. See architecture.md "Transport —
+      // strong rules" #1.
       final s = _setup();
       addTearDown(() async {
         await s.server.dispose();
@@ -149,30 +153,12 @@ void main() {
       s.trust.add(false);
       await _settle();
 
-      expect(s.server.isRunning, isFalse);
-      expect(s.server.boundPort, isNull);
-    });
-
-    test('binds on trusted, unbinds on untrusted', () async {
-      final s = _setup();
-      addTearDown(() async {
-        await s.server.dispose();
-        await s.trust.close();
-        s.dir.deleteSync(recursive: true);
-      });
-
-      await s.server.start();
-      s.trust.add(true);
-      await _settle();
-      expect(s.server.isRunning, isTrue);
+      expect(s.server.isRunning, isTrue,
+          reason: 'server stays bound on untrusted networks');
       expect(s.server.boundPort, isNotNull);
-
-      s.trust.add(false);
-      await _settle();
-      expect(s.server.isRunning, isFalse);
     });
 
-    test('rapid trust → untrust → trust converges to bound', () async {
+    test('stays bound through trust transitions', () async {
       final s = _setup();
       addTearDown(() async {
         await s.server.dispose();
@@ -182,14 +168,23 @@ void main() {
 
       await s.server.start();
       s.trust.add(true);
+      await _settle();
+      final boundPort = s.server.boundPort;
+      expect(boundPort, isNotNull);
+
       s.trust.add(false);
+      await _settle();
+      expect(s.server.isRunning, isTrue,
+          reason: 'untrust must not unbind the socket');
+      expect(s.server.boundPort, boundPort,
+          reason: 'port stays the same — paired peers cached this IP+port');
+
       s.trust.add(true);
       await _settle();
-
       expect(s.server.isRunning, isTrue);
     });
 
-    test('stop() unbinds regardless of trust', () async {
+    test('stop() unbinds the socket', () async {
       final s = _setup();
       addTearDown(() async {
         await s.trust.close();

@@ -59,11 +59,15 @@ class _ScanPairState extends ConsumerState<ScanPairScreen> {
     }
 
     final identity = await identityRepo.get();
+    // Slice 5.1: send our own TLS cert fingerprint so the initiator
+    // can pin it on the resulting PairedDevice for hot-path pinning.
+    final tls = await ref.read(tlsKeyMaterialStoreProvider).get();
     final client = ref.read(pairingClientProvider);
     final result = await client.postCompletion(
       offer: offer,
       responder: identity,
       identityRepo: identityRepo,
+      localCertFingerprintSha256: tls.certificateFingerprintSha256,
     );
 
     if (!mounted) return;

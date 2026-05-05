@@ -12,14 +12,26 @@ import 'package:uuid/uuid.dart';
 import '../security/hmac_verifier.dart';
 import '../security/pair_invite_service.dart';
 import '../security/pairing_service.dart';
+import '../security/tls_key_material.dart';
 import '../storage/downloads_locator.dart';
 import 'incoming_event.dart';
 import 'transport_protocol.dart';
 
-/// Receiving side of the file-transfer transport. shelf-based HTTP
-/// server, gated on trust state via the same desired-state reconciler
-/// pattern used by [MdnsPeerDiscovery] (see slice 2.5). Streams uploads
-/// to disk — never buffers a whole file in memory.
+/// Receiving side of the file-transfer transport. shelf-based HTTPS
+/// server (slice 5.1) — bound once on [start], stays bound through
+/// trust transitions for the lifetime of the app so paired peers can
+/// reach this device on any network. Streams uploads to disk — never
+/// buffers a whole file in memory.
+///
+/// Trust state is no longer an authorization gate (it never was, per
+/// docs/v1/security.md §5). What it gates now is which **routes** the
+/// server exposes:
+///
+/// - `/upload` — always, signed-by-paired-peer is the only check.
+/// - `/pair`, `/pair-invite`, `/pair-finalize` — only when trusted.
+///   Untrusted networks return 404 from these handlers as if the
+///   route weren't registered. See architecture.md "Transport —
+///   strong rules" #1 + #2.
 class HttpFileServer {
   static const _logName = 'sharer.transport.server';
 
@@ -32,6 +44,14 @@ class HttpFileServer {
   final HmacVerifier? _verifier;
   final PairingService? _pairing;
   final PairInviteService? _invite;
+
+  /// Slice 5.1 TLS material. When non-null the server binds with HTTPS;
+  /// when null (test convenience) it falls back to plain HTTP. Production
+  /// providers always wire a real [TlsKeyMaterial]. Held as a Future so
+  /// the composition root can resolve it lazily without making the
+  /// provider itself async.
+  final Future<TlsKeyMaterial>? _tlsFuture;
+
   final int _port;
   final Uuid _uuid;
 
@@ -40,9 +60,11 @@ class HttpFileServer {
   StreamSubscription<bool>? _trustSub;
 
   bool _started = false;
-  bool _desiredEnabled = false;
-  bool _reconcileInFlight = false;
-  bool _reconcileQueued = false;
+
+  /// Latest trust value from the watcher. Pair routes consult this on
+  /// every request; `/upload` ignores it (per slice 4.4 the HMAC gate
+  /// is the only authorization).
+  bool _isTrustedNow = false;
 
   HttpFileServer({
     required DownloadsLocator downloads,
@@ -50,6 +72,7 @@ class HttpFileServer {
     HmacVerifier? verifier,
     PairingService? pairing,
     PairInviteService? invite,
+    Future<TlsKeyMaterial>? tlsMaterial,
     int port = TransportProtocol.defaultPort,
     Uuid? uuid,
   })  : _downloads = downloads,
@@ -57,6 +80,7 @@ class HttpFileServer {
         _verifier = verifier,
         _pairing = pairing,
         _invite = invite,
+        _tlsFuture = tlsMaterial,
         _port = port,
         _uuid = uuid ?? const Uuid();
 
@@ -67,11 +91,16 @@ class HttpFileServer {
 
   bool get isRunning => _httpServer != null;
 
+  /// Bind + start listening. The server stays bound until [stop] —
+  /// trust transitions only flip what pair routes do, not the socket.
   Future<void> start() async {
     if (_started) return;
     _started = true;
-    _log('Started — reacting to trust state');
-    _trustSub = _isTrusted.listen(_onTrustChange);
+    _trustSub = _isTrusted.listen((trusted) {
+      _log('Trust → $trusted (route gate only; socket stays bound)');
+      _isTrustedNow = trusted;
+    });
+    await _bind();
   }
 
   Future<void> stop() async {
@@ -80,8 +109,7 @@ class HttpFileServer {
     _log('Stopping');
     await _trustSub?.cancel();
     _trustSub = null;
-    _desiredEnabled = false;
-    await _runReconcileToCompletion();
+    await _unbind();
   }
 
   Future<void> dispose() async {
@@ -89,68 +117,49 @@ class HttpFileServer {
     await _events.close();
   }
 
-  // ---- Reconciler (mirrors MdnsPeerDiscovery; see slice 2.5 rules) ----
-
-  void _onTrustChange(bool trusted) {
-    _log('Trust → $trusted');
-    _desiredEnabled = trusted;
-    if (_reconcileInFlight) {
-      _reconcileQueued = true;
-      return;
-    }
-    unawaited(_runReconcileToCompletion());
-  }
-
-  Future<void> _runReconcileToCompletion() async {
-    if (_reconcileInFlight) {
-      _reconcileQueued = true;
-      while (_reconcileInFlight) {
-        await Future<void>.delayed(Duration.zero);
-      }
-      return;
-    }
-    _reconcileInFlight = true;
-    try {
-      do {
-        _reconcileQueued = false;
-        await _applyDesiredState();
-      } while (_reconcileQueued);
-    } finally {
-      _reconcileInFlight = false;
-    }
-  }
-
-  Future<void> _applyDesiredState() async {
-    final shouldRun = _desiredEnabled && _started;
-    final isRunningNow = _httpServer != null;
-    if (shouldRun == isRunningNow) return;
-    if (shouldRun) {
-      await _bind();
-    } else {
-      await _unbind();
-    }
-  }
-
   Future<void> _bind() async {
     if (_httpServer != null) return;
-    _log('Binding HTTP server on port $_port');
+    // Resolve the TLS material first so we can log the actual scheme.
+    // This await is intentionally inside _bind: providers stay sync;
+    // the cost (ECDSA keygen ~50ms on first call, free thereafter) is
+    // paid once at startup.
+    final tls = await _tlsFuture;
+    final scheme = tls == null ? 'HTTP' : 'HTTPS';
+    _log('Binding $scheme server on port $_port');
     final router = Router();
     router.post(TransportProtocol.uploadPath, _handleUpload);
+    // All pair routes are always registered — the handlers themselves
+    // self-gate on [_isTrustedNow]. Registering them once at bind time
+    // means trust transitions don't have to rebuild the router.
     if (_pairing != null) {
       router.post(TransportProtocol.pairPath, _handlePair);
     }
-    // Slice 4.6: LAN pair-invite endpoints. Per docs/v1/architecture.md
-    // "Transport — strong rules" #2, these only exist on trusted
-    // networks; the desired-state reconciler above already gates the
-    // bind on trust state, so registering them here is sufficient.
     if (_invite != null) {
       router.post(TransportProtocol.pairInvitePath, _handlePairInvite);
       router.post(TransportProtocol.pairFinalizePath, _handlePairFinalize);
     }
     final handler = const Pipeline().addHandler(router.call);
     try {
-      _httpServer = await shelf_io.serve(handler, InternetAddress.anyIPv4, _port);
-      _log('HTTP server listening on ${_httpServer!.address.address}:${_httpServer!.port}');
+      if (tls == null) {
+        _httpServer = await shelf_io.serve(
+          handler,
+          InternetAddress.anyIPv4,
+          _port,
+        );
+      } else {
+        final ctx = SecurityContext(withTrustedRoots: false)
+          ..useCertificateChainBytes(tls.certificatePem.codeUnits)
+          ..usePrivateKeyBytes(tls.privateKeyPem.codeUnits);
+        _httpServer = await shelf_io.serve(
+          handler,
+          InternetAddress.anyIPv4,
+          _port,
+          securityContext: ctx,
+        );
+      }
+      _log('$scheme server listening on '
+          '${_httpServer!.address.address}:${_httpServer!.port}'
+          '${tls == null ? '' : ' (fingerprint=${tls.certificateFingerprintSha256})'}');
     } catch (e, st) {
       _log('Bind failed: $e');
       developer.log('Bind failed', error: e, stackTrace: st, name: _logName);
@@ -163,7 +172,7 @@ class HttpFileServer {
     final s = _httpServer;
     if (s == null) return;
     _httpServer = null;
-    _log('Unbinding HTTP server');
+    _log('Unbinding server');
     await s.close(force: true);
   }
 
@@ -274,6 +283,10 @@ class HttpFileServer {
   }
 
   Future<Response> _handlePairInvite(Request request) async {
+    if (!_isTrustedNow) {
+      _log('pair-invite refused: untrusted network (route gate)');
+      return Response.notFound('');
+    }
     final invite = _invite!;
     final raw = await request.readAsString();
     Map<String, dynamic> j;
@@ -290,6 +303,7 @@ class HttpFileServer {
     String? initiatorName;
     Uint8List initiatorPublicKey;
     Uint8List initiatorEphemeralPublicKey;
+    String initiatorCertFingerprint;
     Uint8List nonce;
     Uint8List signature;
     DateTime expiresAt;
@@ -299,6 +313,7 @@ class HttpFileServer {
       initiatorName = (j['initiatorName'] as String?) ?? 'Unknown device';
       initiatorPublicKey = dec('initiatorPublicKey');
       initiatorEphemeralPublicKey = dec('initiatorEphemeralPublicKey');
+      initiatorCertFingerprint = j['initiatorCertFingerprint'] as String;
       nonce = dec('nonce');
       signature = dec('signature');
       expiresAt = DateTime.parse(j['expiresAt'] as String);
@@ -306,15 +321,25 @@ class HttpFileServer {
       _log('pair-invite reject: missing/malformed field: $e');
       return Response.badRequest();
     }
+    // Slice 5.1: the responder's own TLS cert fingerprint travels with
+    // the invite acceptance so the initiator can pin us. Pulled from
+    // the cached TLS material (same one the server bound with).
+    final tls = await _tlsFuture;
+    if (tls == null) {
+      _log('pair-invite reject: server has no TLS material');
+      return Response.internalServerError();
+    }
     final result = await invite.acceptInvite(
       inviteId: inviteId,
       initiatorId: initiatorId,
       initiatorName: initiatorName,
       initiatorPublicKey: initiatorPublicKey,
       initiatorEphemeralPublicKey: initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: initiatorCertFingerprint,
       nonce: nonce,
       signature: signature,
       expiresAt: expiresAt,
+      localCertFingerprintSha256: tls.certificateFingerprintSha256,
     );
     switch (result) {
       case PairInviteAccepted(
@@ -322,6 +347,7 @@ class HttpFileServer {
           :final responderName,
           :final responderPublicKey,
           :final responderEphemeralPublicKey,
+          :final responderCertFingerprintSha256,
           :final signature,
         ):
         return Response.ok(
@@ -331,6 +357,7 @@ class HttpFileServer {
             'responderPublicKey': base64Encode(responderPublicKey),
             'responderEphemeralPublicKey':
                 base64Encode(responderEphemeralPublicKey),
+            'responderCertFingerprint': responderCertFingerprintSha256,
             'signature': base64Encode(signature),
           }),
           headers: {'content-type': 'application/json'},
@@ -345,6 +372,10 @@ class HttpFileServer {
   }
 
   Future<Response> _handlePairFinalize(Request request) async {
+    if (!_isTrustedNow) {
+      _log('pair-finalize refused: untrusted network (route gate)');
+      return Response.notFound('');
+    }
     final invite = _invite!;
     final raw = await request.readAsString();
     Map<String, dynamic> j;
@@ -382,6 +413,10 @@ class HttpFileServer {
   }
 
   Future<Response> _handlePair(Request request) async {
+    if (!_isTrustedNow) {
+      _log('pair refused: untrusted network (route gate)');
+      return Response.notFound('');
+    }
     final pairing = _pairing!;
     final headers = request.headers;
     final responderId = headers[TransportProtocol.headerDeviceId];
@@ -420,6 +455,11 @@ class HttpFileServer {
       return Response.unauthorized('');
     }
 
+    // Slice 5.1: optional — present iff the responder is post-5.1.
+    // Persisted on the resulting [PairedDevice] so future hot-path
+    // /upload requests pin against the responder's TLS cert.
+    final responderCertFp = headers[TransportProtocol.headerCertFingerprint];
+
     final paired = await pairing.completePair(
       offerId: offerId,
       numericCode: code,
@@ -428,6 +468,7 @@ class HttpFileServer {
       responderPublicKey: publicKey,
       signature: signature,
       identitySignature: identitySig,
+      responderCertFingerprint: responderCertFp,
     );
     await request.read().drain<void>();
     if (paired == null) return Response.unauthorized('');

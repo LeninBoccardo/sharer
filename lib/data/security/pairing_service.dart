@@ -65,8 +65,14 @@ class PairingService {
   /// Creates a fresh offer and registers it as active. Caller renders
   /// the offer (QR + numeric code) and listens on [completions] for the
   /// responder's POST.
+  ///
+  /// [localCertFingerprintSha256] is the local TLS server's cert
+  /// fingerprint (slice 5.1) — embedded in the QR + signed by the
+  /// initiator's Ed25519 so the responder can pin it when posting
+  /// /pair completion and persist it on the resulting [PairedDevice].
   Future<PairingOffer> createOffer({
     required List<String> endpoints,
+    required String localCertFingerprintSha256,
     Duration ttl = const Duration(seconds: 60),
   }) async {
     _purgeExpired();
@@ -87,6 +93,7 @@ class PairingService {
       initiatorId: identity.id,
       initiatorName: identity.name,
       initiatorPublicKey: identity.publicKey,
+      initiatorCertFingerprintSha256: localCertFingerprintSha256,
       expiresAt: expiresAt,
     );
     final sigBytes = await _identity.sign(canonical);
@@ -98,6 +105,7 @@ class PairingService {
       initiatorId: identity.id,
       initiatorName: identity.name,
       initiatorPublicKey: identity.publicKey,
+      initiatorCertFingerprintSha256: localCertFingerprintSha256,
       signature: Uint8List.fromList(sigBytes),
       expiresAt: expiresAt,
     );
@@ -134,6 +142,7 @@ class PairingService {
     required Uint8List responderPublicKey,
     required String signature,
     required String identitySignature,
+    String? responderCertFingerprint,
   }) async {
     _purgeExpired();
     final offer = _activeOffers[offerId];
@@ -198,12 +207,14 @@ class PairingService {
       displayName: responderName,
       psk: offer.psk,
       publicKey: responderPublicKey,
+      certFingerprint: responderCertFingerprint,
       pairedAt: _now(),
     );
     await _paired.add(paired);
     _activeOffers.remove(offerId);
     _completions.add(paired);
-    _log('completePair OK id=$offerId responder=$responderId');
+    _log('completePair OK id=$offerId responder=$responderId '
+        'certFingerprint=${responderCertFingerprint ?? "<unset>"}');
     return paired;
   }
 
@@ -226,6 +237,7 @@ class PairingService {
       initiatorId: offer.initiatorId,
       initiatorName: offer.initiatorName,
       initiatorPublicKey: offer.initiatorPublicKey,
+      initiatorCertFingerprintSha256: offer.initiatorCertFingerprintSha256,
       expiresAt: offer.expiresAt,
     );
     final ok = await LongTermSigner.verify(
@@ -243,7 +255,10 @@ class PairingService {
   /// Responder-side. Calls [validateOffer] and on success stores the
   /// initiator as paired. Returns null if validation fails (caller
   /// surfaces a single "pairing rejected" error) or the stored
-  /// [PairedDevice] on success.
+  /// [PairedDevice] on success. The initiator's TLS cert fingerprint
+  /// (carried in the offer) is pinned on the resulting [PairedDevice]
+  /// so future hot-path /upload requests to the initiator pin against
+  /// it.
   Future<PairedDevice?> acceptOffer(PairingOffer offer) async {
     if (!await validateOffer(offer)) return null;
     final paired = PairedDevice(
@@ -251,10 +266,12 @@ class PairingService {
       displayName: offer.initiatorName,
       psk: offer.psk,
       publicKey: offer.initiatorPublicKey,
+      certFingerprint: offer.initiatorCertFingerprintSha256,
       pairedAt: _now(),
     );
     await _paired.add(paired);
-    _log('acceptOffer stored initiator=${offer.initiatorId}');
+    _log('acceptOffer stored initiator=${offer.initiatorId} '
+        'certFingerprint=${offer.initiatorCertFingerprintSha256}');
     return paired;
   }
 

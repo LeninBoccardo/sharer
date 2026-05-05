@@ -57,8 +57,14 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
     }
     final endpoints = [for (final ip in ips) '$ip:$port'];
 
+    // Slice 5.1: bake our TLS cert fingerprint into the QR so the
+    // responder can pin the cert when posting /pair completion.
+    final tls = await ref.read(tlsKeyMaterialStoreProvider).get();
     final pairing = ref.read(pairingServiceProvider);
-    final offer = await pairing.createOffer(endpoints: endpoints);
+    final offer = await pairing.createOffer(
+      endpoints: endpoints,
+      localCertFingerprintSha256: tls.certificateFingerprintSha256,
+    );
 
     _completionSub = pairing.completions.listen((paired) {
       if (paired.deviceId == offer.initiatorId) return;

@@ -83,4 +83,12 @@ abstract final class TransportProtocol {
   /// key. Proves "I am the device that owns [headerPublicKey]" alongside
   /// the PSK proof of "I have the offer's ephemeral key."
   static const String headerIdentitySignature = 'x-sharer-identity-sig';
+
+  /// Slice 5.1: SHA-256 fingerprint of the sender's TLS server cert,
+  /// in `aa:bb:...` colon-separated lowercase hex. Sent by the
+  /// responder on /pair so the initiator can pin the responder's cert
+  /// for future hot-path uploads. Mirrors the
+  /// `initiatorCertFingerprintSha256` field that travels in the QR
+  /// offer.
+  static const String headerCertFingerprint = 'x-sharer-cert-fingerprint';
 }

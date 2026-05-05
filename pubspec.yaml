@@ -66,6 +66,11 @@ dependencies:
   # for hardware acceleration is a future polish if profiling shows it.
   cryptography: ^2.7.0
 
+  # Self-signed X.509 cert generation for slice 5.1 TLS + cert pinning.
+  # Wraps pointycastle's ASN.1 + key-gen primitives — much less code than
+  # rolling our own DER encoder.
+  basic_utils: ^5.8.2
+
   # Pairing UI: render the QR offer on the initiator, scan it on the
   # responder. mobile_scanner is camera-based; on desktops without a
   # camera we fall back to the typed-code entry.

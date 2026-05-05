@@ -4,14 +4,18 @@ import 'dart:typed_data';
 import '../../domain/entities/pairing_offer.dart';
 
 /// QR payload framing: a versioned ASCII prefix followed by base64-url
-/// encoded JSON. The prefix lets a future v3 codec coexist with v2 in
-/// the wild and refuse to misparse legacy QRs against a new schema.
+/// encoded JSON. The prefix lets a future codec coexist with the
+/// current one in the wild and refuse to misparse legacy QRs against
+/// a new schema.
 ///
-/// **Schema bump v1 → v2 (slice 4.5):** adds `initiatorPublicKey` (raw
-/// Ed25519 public key) and `signature` (Ed25519 over the canonical bytes
-/// from `pairingOfferCanonicalBytes`). Old v1 QRs no longer decode —
-/// safe because no production pairings exist on the v1 schema.
-const String pairingQrPrefix = 'sharer-pair-v2:';
+/// **Schema bump history:**
+/// - v1 → v2 (slice 4.5): added `initiatorPublicKey` + `signature`.
+/// - v2 → v3 (slice 5.1): added `initiatorCertFingerprintSha256` so
+///   the responder can pin the initiator's TLS cert when posting the
+///   /pair completion. Old v2 QRs no longer decode — same back-compat
+///   posture as the prior bump (no production pairings on v2 expected
+///   to survive slice 5.1's TLS material regeneration).
+const String pairingQrPrefix = 'sharer-pair-v3:';
 
 /// Renders a [PairingOffer] as a single string suitable for a QR code.
 String encodePairingOffer(PairingOffer offer) {
@@ -23,6 +27,7 @@ String encodePairingOffer(PairingOffer offer) {
     'initiatorId': offer.initiatorId,
     'initiatorName': offer.initiatorName,
     'initiatorPublicKey': base64Encode(offer.initiatorPublicKey),
+    'initiatorCertFingerprint': offer.initiatorCertFingerprintSha256,
     'signature': base64Encode(offer.signature),
     'expiresAt': offer.expiresAt.toUtc().toIso8601String(),
   });
@@ -57,6 +62,8 @@ PairingOffer? decodePairingOffer(String raw) {
     if (pub.length != 32) return null;
     final sig = Uint8List.fromList(base64Decode(j['signature'] as String));
     if (sig.length != 64) return null;
+    final certFp = j['initiatorCertFingerprint'] as String?;
+    if (certFp == null || certFp.isEmpty) return null;
     return PairingOffer(
       offerId: j['offerId'] as String,
       psk: psk,
@@ -65,6 +72,7 @@ PairingOffer? decodePairingOffer(String raw) {
       initiatorId: j['initiatorId'] as String,
       initiatorName: j['initiatorName'] as String,
       initiatorPublicKey: pub,
+      initiatorCertFingerprintSha256: certFp,
       signature: sig,
       expiresAt: DateTime.parse(j['expiresAt'] as String),
     );

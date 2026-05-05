@@ -6,6 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sharer/data/security/pair_invite_client.dart';
 import 'package:sharer/data/security/pair_invite_service.dart';
 import 'package:sharer/data/security/paired_devices_store.dart';
+import 'package:sharer/data/security/pinning_http_client.dart';
+import 'package:sharer/data/security/tls_key_generator.dart';
+import 'package:sharer/data/security/tls_key_material.dart';
 import 'package:sharer/data/transport/http_file_server.dart';
 import 'package:sharer/data/transport/transport_protocol.dart';
 import 'package:sharer/domain/entities/pair_invite.dart';
@@ -34,6 +37,7 @@ void main() {
   late StreamController<bool> trust;
   late PairInviteClient client;
   late Directory dir;
+  late TlsKeyMaterial tlsB;
 
   setUp(() async {
     dir = Directory.systemTemp.createTempSync('sharer_invite_e2e_');
@@ -44,16 +48,23 @@ void main() {
     initiatorService = PairInviteService(pairedA, idA);
     responderService = PairInviteService(pairedB, idB);
     trust = StreamController<bool>.broadcast();
+    // Slice 5.1: server requires real TLS material so /pair-invite
+    // can reply with its own cert fingerprint. Use a short validity
+    // since we throw it away at tearDown.
+    tlsB = TlsKeyGenerator.generate(validityDays: 30);
     server = HttpFileServer(
       downloads: FakeDownloadsLocator(dir),
       isTrusted: trust.stream,
       invite: responderService,
+      tlsMaterial: Future.value(tlsB),
       port: 0,
     );
     await server.start();
     trust.add(true);
     await _settle();
     expect(server.isRunning, isTrue);
+    // Tests POST against the loopback server's TLS — pair-invite
+    // intentionally TOFUs so a default pinning client works fine.
     client = PairInviteClient();
   });
 
@@ -80,7 +91,13 @@ void main() {
 
     // A mints + posts invite.
     final payload =
-        await initiatorService.createInvite(responderId: idB.id);
+        await initiatorService.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256:
+          'aa:11:bb:22:cc:33:dd:44:ee:55:ff:66:'
+          '00:77:11:88:22:99:33:aa:44:bb:55:cc:'
+          '66:dd:77:ee:88:ff:99:00',
+    );
     final inviteResult = await client.postInvite(
       host: '127.0.0.1',
       port: port,
@@ -89,6 +106,7 @@ void main() {
       initiatorName: payload.initiatorName,
       initiatorPublicKey: payload.initiatorPublicKey,
       initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
       nonce: payload.nonce,
       signature: payload.signature,
       expiresAt: payload.expiresAt,
@@ -103,6 +121,8 @@ void main() {
       responderName: ok.response.responderName,
       responderPublicKey: ok.response.responderPublicKey,
       responderEphemeralPublicKey: ok.response.responderEphemeralPublicKey,
+      responderCertFingerprintSha256:
+          ok.response.responderCertFingerprintSha256,
       signature: ok.response.signature,
     );
     expect(completed, isA<PairInviteReady>());
@@ -131,6 +151,9 @@ void main() {
       senderId: idA.id,
       verdict: 'match',
       signatureBase64: aMatch!.signatureBase64,
+      // Pin against B's actual TLS cert — the test wired tlsB into
+      // the server above.
+      peerCertFingerprintSha256: tlsB.certificateFingerprintSha256,
     );
     expect(aIntoB, isTrue);
 
@@ -152,28 +175,40 @@ void main() {
     expect(storedOnA.psk, equals(storedOnB.psk));
   });
 
-  test('untrusted network: invite endpoint returns no-route', () async {
-    // Bring the server down (untrust).
+  test('untrusted network: invite endpoint returns 404 (route gate)',
+      () async {
+    // Slice 5.1 — server stays bound on untrusted networks. The pair
+    // routes self-gate on trust state and return 404 as if they
+    // weren't registered. See architecture.md "Transport — strong
+    // rules" #2.
     trust.add(false);
     await _settle();
-    expect(server.isRunning, isFalse);
+    expect(server.isRunning, isTrue,
+        reason: 'socket stays bound across trust transitions');
 
-    // Even raw socket connect fails; the client surfaces a network error.
     final payload =
-        await initiatorService.createInvite(responderId: idB.id);
+        await initiatorService.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256:
+          'aa:11:bb:22:cc:33:dd:44:ee:55:ff:66:'
+          '00:77:11:88:22:99:33:aa:44:bb:55:cc:'
+          '66:dd:77:ee:88:ff:99:00',
+    );
     final result = await client.postInvite(
       host: '127.0.0.1',
-      port: 1, // intentionally unreachable port
+      port: server.boundPort!,
       inviteId: payload.inviteId,
       initiatorId: payload.initiatorId,
       initiatorName: payload.initiatorName,
       initiatorPublicKey: payload.initiatorPublicKey,
       initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
       nonce: payload.nonce,
       signature: payload.signature,
       expiresAt: payload.expiresAt,
     );
-    expect(result, isA<PairInvitePostNetworkError>());
+    expect(result, isA<PairInvitePostDeclined>());
+    expect((result as PairInvitePostDeclined).statusCode, 404);
   });
 
   test('rate limit: a duplicate /pair-invite with a pending entry returns '
@@ -181,7 +216,13 @@ void main() {
     final port = server.boundPort!;
 
     final first =
-        await initiatorService.createInvite(responderId: idB.id);
+        await initiatorService.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256:
+          'aa:11:bb:22:cc:33:dd:44:ee:55:ff:66:'
+          '00:77:11:88:22:99:33:aa:44:bb:55:cc:'
+          '66:dd:77:ee:88:ff:99:00',
+    );
     final firstResult = await client.postInvite(
       host: '127.0.0.1',
       port: port,
@@ -190,6 +231,7 @@ void main() {
       initiatorName: first.initiatorName,
       initiatorPublicKey: first.initiatorPublicKey,
       initiatorEphemeralPublicKey: first.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: first.initiatorCertFingerprintSha256,
       nonce: first.nonce,
       signature: first.signature,
       expiresAt: first.expiresAt,
@@ -197,7 +239,13 @@ void main() {
     expect(firstResult, isA<PairInvitePostOk>());
 
     final second =
-        await initiatorService.createInvite(responderId: idB.id);
+        await initiatorService.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256:
+          'aa:11:bb:22:cc:33:dd:44:ee:55:ff:66:'
+          '00:77:11:88:22:99:33:aa:44:bb:55:cc:'
+          '66:dd:77:ee:88:ff:99:00',
+    );
     final secondResult = await client.postInvite(
       host: '127.0.0.1',
       port: port,
@@ -206,6 +254,7 @@ void main() {
       initiatorName: second.initiatorName,
       initiatorPublicKey: second.initiatorPublicKey,
       initiatorEphemeralPublicKey: second.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: second.initiatorCertFingerprintSha256,
       nonce: second.nonce,
       signature: second.signature,
       expiresAt: second.expiresAt,
@@ -216,10 +265,14 @@ void main() {
 
   test('malformed JSON body → 400', () async {
     final port = server.boundPort!;
-    final http = HttpClient();
+    // Direct raw HttpClient — but pin against the server's actual cert
+    // so the TLS handshake succeeds.
+    final http = buildPinningHttpClient(
+      expectedFingerprint: tlsB.certificateFingerprintSha256,
+    );
     try {
       final req = await http.postUrl(Uri.parse(
-          'http://127.0.0.1:$port${TransportProtocol.pairInvitePath}'));
+          'https://127.0.0.1:$port${TransportProtocol.pairInvitePath}'));
       final body = utf8.encode('{not valid json');
       req.headers.contentLength = body.length;
       req.headers.contentType = ContentType.json;
@@ -228,7 +281,7 @@ void main() {
       expect(resp.statusCode, HttpStatus.badRequest);
       await resp.drain<void>();
     } finally {
-      http.close();
+      http.close(force: true);
     }
   });
 
@@ -242,6 +295,7 @@ void main() {
       verdict: 'match',
       signatureBase64:
           'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      peerCertFingerprintSha256: tlsB.certificateFingerprintSha256,
     );
     expect(ok, isFalse);
   });

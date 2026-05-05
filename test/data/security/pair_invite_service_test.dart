@@ -9,6 +9,15 @@ import 'package:sharer/domain/entities/pair_invite.dart';
 import '../../fakes/fake_secure_key_value_store.dart';
 import '../../fakes/static_identity_repo.dart';
 
+// Stub TLS cert fingerprints for the post-5.1 schema. Pair flows
+// treat them as opaque strings; only invariant is "non-empty".
+const _idACertFp = 'aa:11:bb:22:cc:33:dd:44:ee:55:ff:66:'
+    '00:77:11:88:22:99:33:aa:44:bb:55:cc:'
+    '66:dd:77:ee:88:ff:99:00';
+const _idBCertFp = '11:aa:22:bb:33:cc:44:dd:55:ee:66:ff:'
+    '77:00:88:11:99:22:aa:33:bb:44:cc:55:'
+    'dd:66:ee:77:ff:88:00:99';
+
 /// End-to-end exerciser for the slice 4.6 LAN pair-invite handshake.
 /// Runs two [PairInviteService]s in process — A as initiator, B as
 /// responder — and pumps payloads between them as the wire would.
@@ -62,16 +71,21 @@ void main() {
     final subA = a.invites.listen(emittedA.add);
     final subB = b.invites.listen(emittedB.add);
 
-    final payload = await a.createInvite(responderId: idB.id);
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
     final accepted = await b.acceptInvite(
       inviteId: payload.inviteId,
       initiatorId: payload.initiatorId,
       initiatorName: payload.initiatorName,
       initiatorPublicKey: payload.initiatorPublicKey,
       initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
       nonce: payload.nonce,
       signature: payload.signature,
       expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
     );
     expect(accepted, isA<PairInviteAccepted>(),
         reason: 'B should have accepted A\'s invite');
@@ -83,6 +97,7 @@ void main() {
       responderName: ok.responderName,
       responderPublicKey: ok.responderPublicKey,
       responderEphemeralPublicKey: ok.responderEphemeralPublicKey,
+      responderCertFingerprintSha256: ok.responderCertFingerprintSha256,
       signature: ok.signature,
     );
     expect(completed, isA<PairInviteReady>(),
@@ -222,7 +237,10 @@ void main() {
       imposter,
       random: Random(7),
       now: () => now,
-    ).createInvite(responderId: idB.id);
+    ).createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
 
     final result = await b.acceptInvite(
       inviteId: invite.inviteId,
@@ -230,9 +248,11 @@ void main() {
       initiatorName: 'Lenin-PC',
       initiatorPublicKey: invite.initiatorPublicKey,
       initiatorEphemeralPublicKey: invite.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: invite.initiatorCertFingerprintSha256,
       nonce: invite.nonce,
       signature: invite.signature,
       expiresAt: invite.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
     );
     expect(result, isA<PairInviteRejected>());
   });
@@ -275,29 +295,39 @@ void main() {
 
   test('rate limit: a second pending invite from the same source is rejected',
       () async {
-    final first = await a.createInvite(responderId: idB.id);
+    final first = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
     final firstAccept = await b.acceptInvite(
       inviteId: first.inviteId,
       initiatorId: first.initiatorId,
       initiatorName: first.initiatorName,
       initiatorPublicKey: first.initiatorPublicKey,
       initiatorEphemeralPublicKey: first.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: first.initiatorCertFingerprintSha256,
       nonce: first.nonce,
       signature: first.signature,
       expiresAt: first.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
     );
     expect(firstAccept, isA<PairInviteAccepted>());
 
-    final second = await a.createInvite(responderId: idB.id);
+    final second = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
     final secondAccept = await b.acceptInvite(
       inviteId: second.inviteId,
       initiatorId: second.initiatorId,
       initiatorName: second.initiatorName,
       initiatorPublicKey: second.initiatorPublicKey,
       initiatorEphemeralPublicKey: second.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: second.initiatorCertFingerprintSha256,
       nonce: second.nonce,
       signature: second.signature,
       expiresAt: second.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
     );
     expect(secondAccept, isA<PairInviteRateLimited>());
   });
@@ -324,47 +354,62 @@ void main() {
     expect(decline, isNotNull);
 
     // Round 2: A retries within the cooldown.
-    final retry = await a.createInvite(responderId: idB.id);
+    final retry = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
     final acc = await b.acceptInvite(
       inviteId: retry.inviteId,
       initiatorId: retry.initiatorId,
       initiatorName: retry.initiatorName,
       initiatorPublicKey: retry.initiatorPublicKey,
       initiatorEphemeralPublicKey: retry.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: retry.initiatorCertFingerprintSha256,
       nonce: retry.nonce,
       signature: retry.signature,
       expiresAt: retry.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
     );
     expect(acc, isA<PairInviteRateLimited>());
 
     // Cooldown elapses — accept again.
     now = now.add(const Duration(hours: 1, minutes: 1));
-    final retry2 = await a.createInvite(responderId: idB.id);
+    final retry2 = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
     final acc2 = await b.acceptInvite(
       inviteId: retry2.inviteId,
       initiatorId: retry2.initiatorId,
       initiatorName: retry2.initiatorName,
       initiatorPublicKey: retry2.initiatorPublicKey,
       initiatorEphemeralPublicKey: retry2.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: retry2.initiatorCertFingerprintSha256,
       nonce: retry2.nonce,
       signature: retry2.signature,
       expiresAt: retry2.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
     );
     expect(acc2, isA<PairInviteAccepted>());
   });
 
   test('responder publicKey/deviceId mismatch in completeInvite is rejected',
       () async {
-    final payload = await a.createInvite(responderId: idB.id);
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
     final acc = (await b.acceptInvite(
       inviteId: payload.inviteId,
       initiatorId: payload.initiatorId,
       initiatorName: payload.initiatorName,
       initiatorPublicKey: payload.initiatorPublicKey,
       initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
       nonce: payload.nonce,
       signature: payload.signature,
       expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
     )) as PairInviteAccepted;
 
     // Tamper the responderId so it no longer hashes from publicKey.
@@ -374,6 +419,7 @@ void main() {
       responderName: 'imposter',
       responderPublicKey: acc.responderPublicKey,
       responderEphemeralPublicKey: acc.responderEphemeralPublicKey,
+      responderCertFingerprintSha256: acc.responderCertFingerprintSha256,
       signature: acc.signature,
     );
     expect(result, isA<PairInviteCompleteRejected>());
@@ -381,7 +427,10 @@ void main() {
 
   test('createInvite payload signature verifies under the initiator\'s '
       'long-term key', () async {
-    final payload = await a.createInvite(responderId: idB.id);
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
     expect(payload.signature, hasLength(64),
         reason: 'Ed25519 signatures are 64 bytes');
     final canonical = debugInviteCanonical(
@@ -389,6 +438,7 @@ void main() {
       initiatorId: payload.initiatorId,
       responderId: idB.id,
       initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
       nonce: payload.nonce,
       expiresAt: payload.expiresAt,
     );
@@ -415,16 +465,21 @@ Future<({PairInvite aInvite, PairInvite bInvite, String inviteId})>
   final emittedB = <PairInvite>[];
   final subA = a.invites.listen(emittedA.add);
   final subB = b.invites.listen(emittedB.add);
-  final payload = await a.createInvite(responderId: idB.id);
+  final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
   final acc = (await b.acceptInvite(
     inviteId: payload.inviteId,
     initiatorId: payload.initiatorId,
     initiatorName: payload.initiatorName,
     initiatorPublicKey: payload.initiatorPublicKey,
     initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+    initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
     nonce: payload.nonce,
     signature: payload.signature,
     expiresAt: payload.expiresAt,
+    localCertFingerprintSha256: _idBCertFp,
   )) as PairInviteAccepted;
   await a.completeInvite(
     inviteId: payload.inviteId,
@@ -432,6 +487,7 @@ Future<({PairInvite aInvite, PairInvite bInvite, String inviteId})>
     responderName: acc.responderName,
     responderPublicKey: acc.responderPublicKey,
     responderEphemeralPublicKey: acc.responderEphemeralPublicKey,
+    responderCertFingerprintSha256: acc.responderCertFingerprintSha256,
     signature: acc.signature,
   );
   await pumpEventQueue();

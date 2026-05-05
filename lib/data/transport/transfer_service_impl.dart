@@ -64,9 +64,11 @@ class TransferServiceImpl implements TransferService {
       throw StateError('Peer ${peer.id} is not reachable (no host/port).');
     }
     final identity = await _identityRepo.get();
-    // Sign the upload when we have a PSK for this peer. Unpaired sends
-    // (slice 4.2 fallback) go out unsigned and the receiver leans on the
-    // trust-network gate.
+    // Sign + pin against the peer's pinned cert fingerprint when we
+    // have a PairedDevice entry for them. Unpaired sends — only
+    // possible in slice ≤ 4.3 mode where the trust-network gate was
+    // the fallback — go out unsigned and unpinned. Slice 4.4 + 5.1
+    // production servers reject both.
     final paired = await _pairedRepo.get(peer.id);
     final transfer = Transfer(
       id: _uuid.v4(),
@@ -83,7 +85,14 @@ class TransferServiceImpl implements TransferService {
     // Fire-and-forget the actual upload; progress + completion arrive
     // via the watchAll stream so the caller's Future resolving immediately
     // doesn't block the UI.
-    unawaited(_runUpload(transfer, peer, file, identity, paired?.psk));
+    unawaited(_runUpload(
+      transfer,
+      peer,
+      file,
+      identity,
+      paired?.psk,
+      paired?.certFingerprint,
+    ));
     return transfer;
   }
 
@@ -93,6 +102,7 @@ class TransferServiceImpl implements TransferService {
     FilePayload file,
     DeviceIdentity sender,
     Uint8List? recipientPsk,
+    String? recipientCertFingerprint,
   ) async {
     try {
       final result = await _client.upload(
@@ -101,6 +111,7 @@ class TransferServiceImpl implements TransferService {
         file: file,
         sender: sender,
         recipientPsk: recipientPsk,
+        recipientCertFingerprint: recipientCertFingerprint,
         onProgress: (bytes) {
           final current = _byId[initial.id];
           if (current == null) return;

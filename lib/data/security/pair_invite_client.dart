@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../transport/transport_protocol.dart';
+import 'pinning_http_client.dart';
 
 /// Wire shape returned by the responder's /pair-invite handler when it
 /// accepts the invite. Mirrors the body the responder writes; parsing
@@ -15,6 +16,7 @@ class PairInviteResponse {
     required this.responderName,
     required this.responderPublicKey,
     required this.responderEphemeralPublicKey,
+    required this.responderCertFingerprintSha256,
     required this.signature,
   });
 
@@ -22,6 +24,7 @@ class PairInviteResponse {
   final String responderName;
   final Uint8List responderPublicKey;
   final Uint8List responderEphemeralPublicKey;
+  final String responderCertFingerprintSha256;
   final Uint8List signature;
 }
 
@@ -52,22 +55,33 @@ class PairInvitePostMalformed extends PairInvitePostResult {
 
 const Duration _defaultTimeout = Duration(seconds: 8);
 
-/// Outbound HTTP client for slice 4.6 pair-invite + pair-finalize. Kept
-/// separate from [PairingClient] (slice 4.3 QR flow) and [HttpFileClient]
-/// (transfers) so each can evolve independently — TLS in slice 5.1 will
-/// land first on the file client, the pair clients pick it up later.
+/// Outbound HTTP client for slice 4.6 pair-invite + pair-finalize.
+///
+/// **Slice 5.1 — TLS:** when [_overrideHttpClient] is null (production)
+/// each request builds a fresh single-use [HttpClient] under TOFU
+/// (since this is the first contact with the peer — we don't yet
+/// have a pinned cert fingerprint). The captured fingerprint is
+/// returned via [PairInviteResponse.responderCertFingerprintSha256]
+/// so [PairInviteService.completeInvite] can verify it matches what
+/// the peer claimed in their signed payload before persisting onto
+/// the resulting [PairedDevice]. Tests can opt out of TLS by
+/// constructing with an explicit plain [HttpClient].
 class PairInviteClient {
   static const _logName = 'sharer.security.invite.client';
 
-  PairInviteClient([HttpClient? http]) : _http = http ?? HttpClient();
+  PairInviteClient([HttpClient? http]) : _overrideHttpClient = http;
 
-  final HttpClient _http;
+  final HttpClient? _overrideHttpClient;
 
   /// POST /pair-invite to a single host:port. Caller is expected to
   /// have picked the right candidate from the peer's announced
   /// addresses already — unlike QR pairing where the offer carries
   /// every local IP, the invite flow uses the peer we already
   /// discovered via mDNS, so `host:port` is unambiguous.
+  ///
+  /// [initiatorCertFingerprintSha256] is the local TLS server's cert
+  /// fingerprint, embedded in the payload so the responder can pin
+  /// it later.
   Future<PairInvitePostResult> postInvite({
     required String host,
     required int port,
@@ -76,6 +90,7 @@ class PairInviteClient {
     required String initiatorName,
     required Uint8List initiatorPublicKey,
     required Uint8List initiatorEphemeralPublicKey,
+    required String initiatorCertFingerprintSha256,
     required Uint8List nonce,
     required Uint8List signature,
     required DateTime expiresAt,
@@ -87,15 +102,25 @@ class PairInviteClient {
       'initiatorName': initiatorName,
       'initiatorPublicKey': base64Encode(initiatorPublicKey),
       'initiatorEphemeralPublicKey': base64Encode(initiatorEphemeralPublicKey),
+      'initiatorCertFingerprint': initiatorCertFingerprintSha256,
       'nonce': base64Encode(nonce),
       'signature': base64Encode(signature),
       'expiresAt': expiresAt.toUtc().toIso8601String(),
     });
-    final uri = Uri.parse(
-        'http://$host:$port${TransportProtocol.pairInvitePath}');
+    final useTls = _overrideHttpClient == null;
+    final scheme = useTls ? 'https' : 'http';
+    final uri = Uri.parse('$scheme://$host:$port'
+        '${TransportProtocol.pairInvitePath}');
     _log('POST $uri inviteId=$inviteId');
+    final http = _overrideHttpClient ??
+        // TOFU: accept whatever cert the responder presents; the
+        // payload's `responderCertFingerprint` is signed by their
+        // Ed25519 so [PairInviteService.completeInvite] verifies the
+        // match and rejects on tamper.
+        buildPinningHttpClient(tofuSink: (_, _, _) {});
+    final ownsClient = _overrideHttpClient == null;
     try {
-      final req = await _http.postUrl(uri).timeout(timeout);
+      final req = await http.postUrl(uri).timeout(timeout);
       final encoded = utf8.encode(body);
       req.headers.contentLength = encoded.length;
       req.headers.contentType = ContentType.json;
@@ -113,14 +138,19 @@ class PairInviteClient {
         final eph = Uint8List.fromList(
             base64Decode(j['responderEphemeralPublicKey'] as String));
         final sig = Uint8List.fromList(base64Decode(j['signature'] as String));
+        final certFp = j['responderCertFingerprint'] as String?;
         if (pub.length != 32 || eph.length != 32 || sig.length != 64) {
           return PairInvitePostMalformed('bad key/sig length');
+        }
+        if (certFp == null || certFp.isEmpty) {
+          return PairInvitePostMalformed('missing responderCertFingerprint');
         }
         return PairInvitePostOk(PairInviteResponse(
           responderId: j['responderId'] as String,
           responderName: (j['responderName'] as String?) ?? '',
           responderPublicKey: pub,
           responderEphemeralPublicKey: eph,
+          responderCertFingerprintSha256: certFp,
           signature: sig,
         ));
       } catch (e) {
@@ -131,14 +161,21 @@ class PairInviteClient {
           error: e, stackTrace: st, name: _logName);
       _log('network error to $host:$port: $e');
       return PairInvitePostNetworkError(e);
+    } finally {
+      if (ownsClient) http.close(force: true);
     }
   }
 
   /// POST /pair-finalize. Body shape matches [PairInviteService]'s
-  /// [finalize] canonical: `{inviteId, senderId, verdict, signature}`.
+  /// finalize canonical: `{inviteId, senderId, verdict, signature}`.
   /// Returns true on 200, false on anything else (including network).
   /// Failures are non-fatal — the in-flight TTL on the peer side will
   /// expire the entry naturally.
+  ///
+  /// [peerCertFingerprintSha256] is the cert fingerprint we already
+  /// learned from the prior /pair-invite handshake (or, on the
+  /// responder side, from the inbound invite payload). The pinning
+  /// client rejects any cert whose hash doesn't match.
   Future<bool> postFinalize({
     required String host,
     required int port,
@@ -146,6 +183,7 @@ class PairInviteClient {
     required String senderId,
     required String verdict,
     required String signatureBase64,
+    required String peerCertFingerprintSha256,
     Duration timeout = _defaultTimeout,
   }) async {
     final body = jsonEncode({
@@ -154,11 +192,17 @@ class PairInviteClient {
       'verdict': verdict,
       'signature': signatureBase64,
     });
-    final uri = Uri.parse(
-        'http://$host:$port${TransportProtocol.pairFinalizePath}');
+    final useTls = _overrideHttpClient == null;
+    final scheme = useTls ? 'https' : 'http';
+    final uri = Uri.parse('$scheme://$host:$port'
+        '${TransportProtocol.pairFinalizePath}');
     _log('POST $uri inviteId=$inviteId verdict=$verdict');
+    final http = _overrideHttpClient ??
+        buildPinningHttpClient(
+            expectedFingerprint: peerCertFingerprintSha256);
+    final ownsClient = _overrideHttpClient == null;
     try {
-      final req = await _http.postUrl(uri).timeout(timeout);
+      final req = await http.postUrl(uri).timeout(timeout);
       final encoded = utf8.encode(body);
       req.headers.contentLength = encoded.length;
       req.headers.contentType = ContentType.json;
@@ -172,11 +216,13 @@ class PairInviteClient {
           error: e, stackTrace: st, name: _logName);
       _log('finalize network error to $host:$port: $e');
       return false;
+    } finally {
+      if (ownsClient) http.close(force: true);
     }
   }
 
   void close() {
-    _http.close(force: true);
+    _overrideHttpClient?.close(force: true);
   }
 
   void _log(String message) {

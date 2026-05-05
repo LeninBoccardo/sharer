@@ -41,9 +41,16 @@ void main() {
     await paired.dispose();
   });
 
+  // Stub TLS cert fingerprint — pair flows treat it as opaque, the
+  // value just has to be non-empty to satisfy the post-5.1 invariants.
+  const stubInitiatorCertFp =
+      '11:22:33:44:55:66:77:88:99:00:11:22:33:44:55:66:'
+      '77:88:99:00:11:22:33:44:55:66:77:88:99:00:11:22';
+
   Future<PairingOffer> mintOffer({Duration? ttl}) async {
     return service.createOffer(
       endpoints: const ['192.168.68.10:8080'],
+      localCertFingerprintSha256: stubInitiatorCertFp,
       ttl: ttl ?? const Duration(seconds: 60),
     );
   }
@@ -84,6 +91,7 @@ void main() {
     expect(offer.endpoints, ['192.168.68.10:8080']);
     expect(offer.expiresAt, now.add(const Duration(seconds: 60)));
     expect(offer.initiatorPublicKey, initiatorIdentity.publicKey);
+    expect(offer.initiatorCertFingerprintSha256, stubInitiatorCertFp);
     expect(offer.signature, hasLength(64));
     // Signature actually verifies against the initiator's public key.
     final canonical = pairingOfferCanonicalBytes(
@@ -94,6 +102,7 @@ void main() {
       initiatorId: offer.initiatorId,
       initiatorName: offer.initiatorName,
       initiatorPublicKey: offer.initiatorPublicKey,
+      initiatorCertFingerprintSha256: offer.initiatorCertFingerprintSha256,
       expiresAt: offer.expiresAt,
     );
     final ok = await LongTermSigner.verify(
@@ -320,6 +329,7 @@ void main() {
       initiatorId: offer.initiatorId,
       initiatorName: offer.initiatorName,
       initiatorPublicKey: offer.initiatorPublicKey,
+      initiatorCertFingerprintSha256: offer.initiatorCertFingerprintSha256,
       signature: Uint8List(64),
       expiresAt: offer.expiresAt,
     );
@@ -338,6 +348,7 @@ void main() {
       initiatorId: 'forged-id', // mismatch
       initiatorName: offer.initiatorName,
       initiatorPublicKey: offer.initiatorPublicKey,
+      initiatorCertFingerprintSha256: offer.initiatorCertFingerprintSha256,
       signature: offer.signature,
       expiresAt: offer.expiresAt,
     );

@@ -46,6 +46,13 @@ class PairingOffer {
   /// the rest of the offer to that key).
   final Uint8List signature;
 
+  /// Slice 5.1: SHA-256 fingerprint (`aa:bb:...`) of the initiator's
+  /// TLS server cert. Carried in the QR + signed by the initiator's
+  /// Ed25519, so the responder can pin the cert when posting /pair
+  /// completion and persist it on the resulting [PairedDevice] for
+  /// future hot-path /upload pinning.
+  final String initiatorCertFingerprintSha256;
+
   /// Wall-clock instant after which this offer must be rejected.
   final DateTime expiresAt;
 
@@ -57,6 +64,7 @@ class PairingOffer {
     required this.initiatorId,
     required this.initiatorName,
     required this.initiatorPublicKey,
+    required this.initiatorCertFingerprintSha256,
     required this.signature,
     required this.expiresAt,
   })  : assert(psk.length == 32, 'PSK must be 32 bytes (256 bits)'),
@@ -66,13 +74,20 @@ class PairingOffer {
         assert(initiatorPublicKey.length == 32,
             'initiator publicKey must be 32 bytes'),
         assert(signature.length == 64,
-            'Ed25519 signatures are 64 bytes');
+            'Ed25519 signatures are 64 bytes'),
+        assert(initiatorCertFingerprintSha256.isNotEmpty,
+            'cert fingerprint required since slice 5.1');
 
   bool isExpired(DateTime now) => !now.isBefore(expiresAt);
 }
 
 /// Canonical bytes covered by the offer's Ed25519 signature. Independent
 /// of JSON ordering so the signature stays valid across encoder versions.
+///
+/// **Slice 5.1 schema bump (v2 → v3):** added
+/// `initiatorCertFingerprintSha256`. Old v2 QRs no longer verify and
+/// re-pair is required — same back-compat posture as the slice 4.5
+/// v1 → v2 bump.
 List<int> pairingOfferCanonicalBytes({
   required String offerId,
   required List<int> psk,
@@ -81,10 +96,11 @@ List<int> pairingOfferCanonicalBytes({
   required String initiatorId,
   required String initiatorName,
   required List<int> initiatorPublicKey,
+  required String initiatorCertFingerprintSha256,
   required DateTime expiresAt,
 }) {
   final parts = <String>[
-    'sharer-pair-offer-v2',
+    'sharer-pair-offer-v3',
     offerId,
     _hex(psk),
     numericCode,
@@ -92,6 +108,7 @@ List<int> pairingOfferCanonicalBytes({
     initiatorId,
     initiatorName,
     _hex(initiatorPublicKey),
+    initiatorCertFingerprintSha256,
     expiresAt.toUtc().toIso8601String(),
   ];
   return parts.join('\n').codeUnits;

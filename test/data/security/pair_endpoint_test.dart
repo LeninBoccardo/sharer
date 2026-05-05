@@ -20,6 +20,15 @@ Future<void> _settle() async {
   }
 }
 
+// Stub TLS cert fingerprints. Pair flows treat them as opaque strings
+// so the value just has to be non-empty in the post-5.1 schema.
+const stubInitiatorCertFp =
+    '11:22:33:44:55:66:77:88:99:00:11:22:33:44:55:66:'
+    '77:88:99:00:11:22:33:44:55:66:77:88:99:00:11:22';
+const stubResponderCertFp =
+    'aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:'
+    'aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99';
+
 void main() {
   late Directory tmpDir;
   late StreamController<bool> trust;
@@ -55,7 +64,10 @@ void main() {
     await server.start();
     trust.add(true);
     await _settle();
-    client = PairingClient();
+    // Tests use a plain-HTTP server (no TLS material wired). Inject a
+    // plain HttpClient so PairingClient skips its production pinning
+    // path and talks HTTP instead of HTTPS.
+    client = PairingClient(HttpClient());
   });
 
   tearDown(() async {
@@ -73,12 +85,14 @@ void main() {
       offer: offer,
       responder: responder,
       identityRepo: responderIdentity,
+      localCertFingerprintSha256: stubResponderCertFp,
     );
   }
 
   test('responder can complete pairing end-to-end', () async {
     final offer = await pairing.createOffer(
       endpoints: ['127.0.0.1:${server.boundPort}'],
+      localCertFingerprintSha256: stubInitiatorCertFp,
     );
 
     final result = await postAs(offer);
@@ -93,6 +107,7 @@ void main() {
   test('completion fails when offer was never created', () async {
     final live = await pairing.createOffer(
       endpoints: ['127.0.0.1:${server.boundPort}'],
+      localCertFingerprintSha256: stubInitiatorCertFp,
     );
     // Forge an offer with a fake offerId but valid signature against
     // the initiator's key — server still rejects (unknown offerId).
@@ -104,6 +119,7 @@ void main() {
       initiatorId: initiatorIdentity.id,
       initiatorName: 'Lenin-PC',
       initiatorPublicKey: initiatorIdentity.publicKey,
+      initiatorCertFingerprintSha256: stubInitiatorCertFp,
       signature: Uint8List(64),
       expiresAt: DateTime.now().add(const Duration(seconds: 60)),
     );
@@ -116,6 +132,7 @@ void main() {
   test('PairingClient surfaces network errors as networkError', () async {
     final offer = await pairing.createOffer(
       endpoints: ['127.0.0.1:${server.boundPort}'],
+      localCertFingerprintSha256: stubInitiatorCertFp,
     );
     final brokenOffer = PairingOffer(
       offerId: offer.offerId,
@@ -125,6 +142,7 @@ void main() {
       initiatorId: offer.initiatorId,
       initiatorName: offer.initiatorName,
       initiatorPublicKey: offer.initiatorPublicKey,
+      initiatorCertFingerprintSha256: offer.initiatorCertFingerprintSha256,
       signature: offer.signature,
       expiresAt: offer.expiresAt,
     );
@@ -135,6 +153,7 @@ void main() {
       () async {
     final offer = await pairing.createOffer(
       endpoints: ['127.0.0.1:${server.boundPort}'],
+      localCertFingerprintSha256: stubInitiatorCertFp,
     );
     final brokenOffer = PairingOffer(
       offerId: offer.offerId,
@@ -144,6 +163,7 @@ void main() {
       initiatorId: offer.initiatorId,
       initiatorName: offer.initiatorName,
       initiatorPublicKey: offer.initiatorPublicKey,
+      initiatorCertFingerprintSha256: offer.initiatorCertFingerprintSha256,
       signature: offer.signature,
       expiresAt: offer.expiresAt,
     );
@@ -154,6 +174,7 @@ void main() {
       () async {
     final offer = await pairing.createOffer(
       endpoints: ['127.0.0.1:1', '127.0.0.1:${server.boundPort}'],
+      localCertFingerprintSha256: stubInitiatorCertFp,
     );
     final result = await postAs(offer);
     expect(result, PairingPostResult.ok,

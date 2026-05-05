@@ -40,6 +40,7 @@ class PairInviteAccepted extends PairInviteAcceptResult {
   PairInviteAccepted({
     required this.responderEphemeralPublicKey,
     required this.responderPublicKey,
+    required this.responderCertFingerprintSha256,
     required this.responderId,
     required this.responderName,
     required this.signature,
@@ -48,6 +49,7 @@ class PairInviteAccepted extends PairInviteAcceptResult {
 
   final Uint8List responderEphemeralPublicKey;
   final Uint8List responderPublicKey;
+  final String responderCertFingerprintSha256;
   final String responderId;
   final String responderName;
   final Uint8List signature;
@@ -99,6 +101,7 @@ class _Pending {
     required this.peerName,
     required this.peerLongTermPublicKey,
     required this.peerEphemeralPublicKey,
+    required this.peerCertFingerprint,
     required this.myEphemeralKeyPair,
     required this.myEphemeralPublicKey,
     required this.psk,
@@ -112,6 +115,10 @@ class _Pending {
   String peerName;
   final Uint8List peerLongTermPublicKey;
   final Uint8List peerEphemeralPublicKey;
+  /// Slice 5.1: peer's TLS cert fingerprint, persisted onto
+  /// PairedDevice on commit so future hot-path /upload requests pin
+  /// against it.
+  final String peerCertFingerprint;
   final SimpleKeyPair myEphemeralKeyPair;
   final Uint8List myEphemeralPublicKey;
   final Uint8List psk;
@@ -135,6 +142,7 @@ class _InitiatorAwaitingResponse {
     required this.responderId,
     required this.myEphemeralKeyPair,
     required this.myEphemeralPublicKey,
+    required this.myCertFingerprint,
     required this.expiresAt,
   });
 
@@ -142,6 +150,7 @@ class _InitiatorAwaitingResponse {
   final String responderId;
   final SimpleKeyPair myEphemeralKeyPair;
   final Uint8List myEphemeralPublicKey;
+  final String myCertFingerprint;
   final DateTime expiresAt;
 }
 
@@ -213,16 +222,25 @@ class PairInviteService {
   /// Step 1 (initiator). Mint a fresh invite payload to be POSTed to
   /// the responder's /pair-invite. The X25519 ephemeral key is held
   /// in-process — we cannot finish the handshake if the app is killed.
+  ///
+  /// [localCertFingerprintSha256] is the initiator's TLS server cert
+  /// fingerprint (slice 5.1) — covered by the Ed25519 sig and embedded
+  /// in the payload so the responder can persist it on the resulting
+  /// [PairedDevice] for hot-path /upload pinning.
   Future<({
     String inviteId,
     String initiatorId,
     String initiatorName,
     Uint8List initiatorPublicKey,
     Uint8List initiatorEphemeralPublicKey,
+    String initiatorCertFingerprintSha256,
     Uint8List nonce,
     Uint8List signature,
     DateTime expiresAt,
-  })> createInvite({required String responderId}) async {
+  })> createInvite({
+    required String responderId,
+    required String localCertFingerprintSha256,
+  }) async {
     _purgeExpired();
     final identity = await _identity.get();
     final ephemeral = await EphemeralX25519KeyPair.generate();
@@ -234,6 +252,7 @@ class PairInviteService {
       initiatorId: identity.id,
       responderId: responderId,
       initiatorEphemeralPublicKey: ephemeral.publicKey,
+      initiatorCertFingerprintSha256: localCertFingerprintSha256,
       nonce: nonce,
       expiresAt: expiresAt,
     );
@@ -243,6 +262,7 @@ class PairInviteService {
       responderId: responderId,
       myEphemeralKeyPair: ephemeral.keyPair,
       myEphemeralPublicKey: ephemeral.publicKey,
+      myCertFingerprint: localCertFingerprintSha256,
       expiresAt: expiresAt,
     );
     _log('createInvite id=$inviteId responder=$responderId');
@@ -252,6 +272,7 @@ class PairInviteService {
       initiatorName: identity.name,
       initiatorPublicKey: identity.publicKey,
       initiatorEphemeralPublicKey: ephemeral.publicKey,
+      initiatorCertFingerprintSha256: localCertFingerprintSha256,
       nonce: nonce,
       signature: Uint8List.fromList(signature),
       expiresAt: expiresAt,
@@ -267,6 +288,7 @@ class PairInviteService {
     required String responderName,
     required Uint8List responderPublicKey,
     required Uint8List responderEphemeralPublicKey,
+    required String responderCertFingerprintSha256,
     required Uint8List signature,
   }) async {
     _purgeExpired();
@@ -288,10 +310,15 @@ class PairInviteService {
       _log('completeInvite reject: responder identity changed id=$inviteId');
       return PairInviteCompleteRejected('responder mismatch');
     }
+    if (responderCertFingerprintSha256.isEmpty) {
+      _log('completeInvite reject: missing cert fingerprint id=$inviteId');
+      return PairInviteCompleteRejected('missing cert fingerprint');
+    }
     final canonical = _responseCanonical(
       inviteId: inviteId,
       responderId: responderId,
       responderEphemeralPublicKey: responderEphemeralPublicKey,
+      responderCertFingerprintSha256: responderCertFingerprintSha256,
       initiatorEphemeralPublicKey: pending.myEphemeralPublicKey,
     );
     final ok = await LongTermSigner.verify(
@@ -317,6 +344,7 @@ class PairInviteService {
       peerName: responderName,
       peerLongTermPublicKey: responderPublicKey,
       peerEphemeralPublicKey: responderEphemeralPublicKey,
+      peerCertFingerprint: responderCertFingerprintSha256,
       myEphemeralKeyPair: pending.myEphemeralKeyPair,
       myEphemeralPublicKey: pending.myEphemeralPublicKey,
       psk: psk,
@@ -337,15 +365,26 @@ class PairInviteService {
   /// Step 2 (responder). Called by the HTTP handler when /pair-invite
   /// arrives. Validates the initiator's Ed25519 sig, then on success
   /// derives the PSK and returns the bytes the handler will send back.
+  ///
+  /// [initiatorCertFingerprintSha256] — what the initiator claims their
+  /// TLS server cert fingerprint is. Covered by the initiator's
+  /// signature; persisted on the resulting [PairedDevice] for hot-path
+  /// /upload pinning.
+  ///
+  /// [localCertFingerprintSha256] — the responder's own TLS cert
+  /// fingerprint, included in the response payload + signature so the
+  /// initiator can pin us in turn.
   Future<PairInviteAcceptResult> acceptInvite({
     required String inviteId,
     required String initiatorId,
     required String initiatorName,
     required Uint8List initiatorPublicKey,
     required Uint8List initiatorEphemeralPublicKey,
+    required String initiatorCertFingerprintSha256,
     required Uint8List nonce,
     required Uint8List signature,
     required DateTime expiresAt,
+    required String localCertFingerprintSha256,
   }) async {
     _purgeExpired();
 
@@ -357,6 +396,10 @@ class PairInviteService {
     if (LongTermSigner.fingerprintOf(initiatorPublicKey) != initiatorId) {
       _log('acceptInvite reject: deviceId/publicKey mismatch id=$inviteId');
       return PairInviteRejected('identity mismatch');
+    }
+    if (initiatorCertFingerprintSha256.isEmpty) {
+      _log('acceptInvite reject: missing cert fingerprint id=$inviteId');
+      return PairInviteRejected('missing cert fingerprint');
     }
 
     // Cooldown after a previous local decline from this peer.
@@ -385,6 +428,7 @@ class PairInviteService {
       initiatorId: initiatorId,
       responderId: identity.id,
       initiatorEphemeralPublicKey: initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: initiatorCertFingerprintSha256,
       nonce: nonce,
       expiresAt: expiresAt,
     );
@@ -411,6 +455,7 @@ class PairInviteService {
       inviteId: inviteId,
       responderId: identity.id,
       responderEphemeralPublicKey: myEphemeral.publicKey,
+      responderCertFingerprintSha256: localCertFingerprintSha256,
       initiatorEphemeralPublicKey: initiatorEphemeralPublicKey,
     );
     final mySignature =
@@ -423,6 +468,7 @@ class PairInviteService {
       peerName: initiatorName,
       peerLongTermPublicKey: initiatorPublicKey,
       peerEphemeralPublicKey: initiatorEphemeralPublicKey,
+      peerCertFingerprint: initiatorCertFingerprintSha256,
       myEphemeralKeyPair: myEphemeral.keyPair,
       myEphemeralPublicKey: myEphemeral.publicKey,
       psk: psk,
@@ -439,6 +485,7 @@ class PairInviteService {
     return PairInviteAccepted(
       responderEphemeralPublicKey: myEphemeral.publicKey,
       responderPublicKey: identity.publicKey,
+      responderCertFingerprintSha256: localCertFingerprintSha256,
       responderId: identity.id,
       responderName: identity.name,
       signature: mySignature,
@@ -561,6 +608,12 @@ class PairInviteService {
     return PairFinalizeRecorded();
   }
 
+  /// Returns the peer's TLS cert fingerprint as captured during the
+  /// handshake, so the [InviteController] can pin /pair-finalize POSTs
+  /// against the same cert. Null when no in-flight entry matches.
+  String? peerCertFingerprintFor(String inviteId) =>
+      _pending[inviteId]?.peerCertFingerprint;
+
   /// Drop the in-flight invite without sending anything. Used when the
   /// initiator's POST /pair-invite failed at the network layer (peer
   /// unreachable, HTTP error, decline) — no sense keeping ephemeral
@@ -590,6 +643,7 @@ class PairInviteService {
       displayName: p.peerName,
       psk: p.psk,
       publicKey: p.peerLongTermPublicKey,
+      certFingerprint: p.peerCertFingerprint,
       pairedAt: _now(),
     );
     await _paired.add(paired);
@@ -662,6 +716,7 @@ List<int> _inviteCanonical({
   required String initiatorId,
   required String responderId,
   required Uint8List initiatorEphemeralPublicKey,
+  required String initiatorCertFingerprintSha256,
   required Uint8List nonce,
   required DateTime expiresAt,
 }) {
@@ -671,6 +726,7 @@ List<int> _inviteCanonical({
     initiatorId,
     responderId,
     _hex(initiatorEphemeralPublicKey),
+    initiatorCertFingerprintSha256,
     _hex(nonce),
     expiresAt.toUtc().toIso8601String(),
   ].join('\n'));
@@ -681,6 +737,7 @@ List<int> _responseCanonical({
   required String inviteId,
   required String responderId,
   required Uint8List responderEphemeralPublicKey,
+  required String responderCertFingerprintSha256,
   required Uint8List initiatorEphemeralPublicKey,
 }) {
   return utf8.encode([
@@ -688,6 +745,7 @@ List<int> _responseCanonical({
     inviteId,
     responderId,
     _hex(responderEphemeralPublicKey),
+    responderCertFingerprintSha256,
     _hex(initiatorEphemeralPublicKey),
   ].join('\n'));
 }
@@ -720,6 +778,7 @@ List<int> debugInviteCanonical({
   required String initiatorId,
   required String responderId,
   required Uint8List initiatorEphemeralPublicKey,
+  required String initiatorCertFingerprintSha256,
   required Uint8List nonce,
   required DateTime expiresAt,
 }) =>
@@ -728,6 +787,7 @@ List<int> debugInviteCanonical({
       initiatorId: initiatorId,
       responderId: responderId,
       initiatorEphemeralPublicKey: initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: initiatorCertFingerprintSha256,
       nonce: nonce,
       expiresAt: expiresAt,
     );
@@ -736,12 +796,14 @@ List<int> debugResponseCanonical({
   required String inviteId,
   required String responderId,
   required Uint8List responderEphemeralPublicKey,
+  required String responderCertFingerprintSha256,
   required Uint8List initiatorEphemeralPublicKey,
 }) =>
     _responseCanonical(
       inviteId: inviteId,
       responderId: responderId,
       responderEphemeralPublicKey: responderEphemeralPublicKey,
+      responderCertFingerprintSha256: responderCertFingerprintSha256,
       initiatorEphemeralPublicKey: initiatorEphemeralPublicKey,
     );
 

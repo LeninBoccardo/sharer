@@ -3,11 +3,12 @@ import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 
+import '../../data/security/pair_invite_client.dart';
+import '../../data/security/pair_invite_service.dart';
+import '../../data/security/tls_key_material_store.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
-import '../../data/security/pair_invite_client.dart';
-import '../../data/security/pair_invite_service.dart';
 
 /// Outcome of [InviteController.invite]. Drives the UI between
 /// "couldn't reach peer" (snackbar) and "show fingerprint modal".
@@ -34,13 +35,16 @@ class InviteController {
     required PairInviteService service,
     required PairInviteClient client,
     required DeviceIdentityRepository identityRepo,
+    required TlsKeyMaterialStore tlsStore,
   })  : _service = service,
         _client = client,
-        _identityRepo = identityRepo;
+        _identityRepo = identityRepo,
+        _tlsStore = tlsStore;
 
   final PairInviteService _service;
   final PairInviteClient _client;
   final DeviceIdentityRepository _identityRepo;
+  final TlsKeyMaterialStore _tlsStore;
 
   /// Initiator entry point. Runs the full create→POST→complete pipeline
   /// and returns once the fingerprint is ready (or we failed).
@@ -48,7 +52,11 @@ class InviteController {
     if (peer.host == null || peer.port == null) {
       return InviteFailed('Peer is not reachable yet — try again.');
     }
-    final payload = await _service.createInvite(responderId: peer.id);
+    final tls = await _tlsStore.get();
+    final payload = await _service.createInvite(
+      responderId: peer.id,
+      localCertFingerprintSha256: tls.certificateFingerprintSha256,
+    );
     final post = await _client.postInvite(
       host: peer.host!,
       port: peer.port!,
@@ -57,6 +65,7 @@ class InviteController {
       initiatorName: payload.initiatorName,
       initiatorPublicKey: payload.initiatorPublicKey,
       initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
       nonce: payload.nonce,
       signature: payload.signature,
       expiresAt: payload.expiresAt,
@@ -71,6 +80,8 @@ class InviteController {
               : response.responderName,
           responderPublicKey: response.responderPublicKey,
           responderEphemeralPublicKey: response.responderEphemeralPublicKey,
+          responderCertFingerprintSha256:
+              response.responderCertFingerprintSha256,
           signature: response.signature,
         );
         switch (completed) {
@@ -113,6 +124,8 @@ class InviteController {
     required bool match,
   }) async {
     final identity = await _identityRepo.get();
+    final peerCertFp =
+        _service.peerCertFingerprintFor(invite.inviteId);
     final signed = match
         ? await _service.markLocalMatched(invite.inviteId)
         : await _service.markLocalDeclined(invite.inviteId);
@@ -124,6 +137,13 @@ class InviteController {
       _log('finalize skip POST: peer not reachable');
       return;
     }
+    if (peerCertFp == null) {
+      // Should never happen if the invite was emitted by the service —
+      // log + skip rather than crash. The peer's TTL will clean up.
+      _log('finalize skip POST: missing peer cert fingerprint for '
+          '${invite.inviteId}');
+      return;
+    }
     await _client.postFinalize(
       host: peer!.host!,
       port: peer.port!,
@@ -131,6 +151,7 @@ class InviteController {
       senderId: identity.id,
       verdict: match ? 'match' : 'decline',
       signatureBase64: signed.signatureBase64,
+      peerCertFingerprintSha256: peerCertFp,
     );
   }
 
