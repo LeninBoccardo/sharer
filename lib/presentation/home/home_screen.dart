@@ -5,20 +5,51 @@ import 'package:mime/mime.dart';
 
 import '../../app/providers.dart';
 import '../../domain/entities/file_payload.dart';
+import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
 import '../diagnostics/diagnostics_screen.dart';
 import '../pairing/devices_screen.dart';
+import '../pairing/invite_controller.dart';
+import '../pairing/pair_invite_modal.dart';
 import '../pairing/show_pair_screen.dart';
 import '../transfers/transfers_section.dart';
 import 'quiet_mode_banner.dart';
 
-class HomeScreen extends ConsumerWidget {
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends ConsumerState<HomeScreen> {
+  /// Track invite ids we've already opened a modal for so we don't
+  /// double-open on every status emission.
+  final _modalShownFor = <String>{};
+
+  @override
+  Widget build(BuildContext context) {
     final peersAsync = ref.watch(peersStreamProvider);
     final theme = Theme.of(context);
+
+    // Surface inbound (responder-side) invites as soon as the service
+    // emits an awaitingFingerprint event. We don't show modals for
+    // initiator-side invites here — the home_screen / peer-tap path
+    // opens those itself, so it controls the modal lifecycle.
+    ref.listen(pairInviteStreamProvider, (_, next) {
+      next.whenData((invite) {
+        if (invite.role != PairInviteRole.responder) return;
+        if (invite.status != PairInviteStatus.awaitingFingerprint) return;
+        if (!_modalShownFor.add(invite.inviteId)) return;
+        // Try to find the inbound peer in the discovered list so we
+        // can route /pair-finalize back at them. If they're not in the
+        // list (yet), the controller still updates local state — the
+        // peer's TTL will take care of cleanup.
+        final peers = ref.read(peersStreamProvider).value ?? const [];
+        final peer = peers.where((p) => p.id == invite.peerId).firstOrNull;
+        PairInviteModal.show(context, invite: invite, peer: peer);
+      });
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -171,13 +202,13 @@ class _PeerTile extends ConsumerWidget {
     required bool isPaired,
   }) async {
     if (!isPaired) {
-      await _showPairFirstSheet(context);
+      await _showPairFirstSheet(context, ref);
       return;
     }
     await _pickAndSend(context, ref);
   }
 
-  Future<void> _showPairFirstSheet(BuildContext context) async {
+  Future<void> _showPairFirstSheet(BuildContext context, WidgetRef ref) async {
     final theme = Theme.of(context);
     await showModalBottomSheet<void>(
       context: context,
@@ -205,9 +236,21 @@ class _PeerTile extends ConsumerWidget {
               ),
               const SizedBox(height: 20),
               FilledButton.icon(
-                icon: const Icon(Icons.qr_code_2),
-                label: const Text('Show my code'),
+                icon: const Icon(Icons.send_to_mobile),
+                label: const Text('Send pair invite'),
                 style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  _sendInvite(context, ref);
+                },
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.qr_code_2),
+                label: const Text('Use QR code instead'),
+                style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
                 onPressed: () {
@@ -219,13 +262,10 @@ class _PeerTile extends ConsumerWidget {
                   );
                 },
               ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
+              const SizedBox(height: 4),
+              TextButton.icon(
                 icon: const Icon(Icons.devices),
                 label: const Text('Open Devices'),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
                 onPressed: () {
                   Navigator.of(sheetCtx).pop();
                   Navigator.of(context).push(
@@ -242,10 +282,22 @@ class _PeerTile extends ConsumerWidget {
     );
   }
 
+  Future<void> _sendInvite(BuildContext context, WidgetRef ref) async {
+    final controller = ref.read(inviteControllerProvider);
+    final outcome = await controller.invite(peer);
+    if (!context.mounted) return;
+    switch (outcome) {
+      case InviteLaunched(:final invite):
+        await PairInviteModal.show(context, invite: invite, peer: peer);
+      case InviteFailed(:final message):
+        _toast(context, message);
+    }
+  }
+
   Future<void> _pickAndSend(BuildContext context, WidgetRef ref) async {
     final FilePickerResult? result;
     try {
-      result = await FilePicker.platform.pickFiles(
+      result = await FilePicker.pickFiles(
         withReadStream: true,
         allowMultiple: true,
       );

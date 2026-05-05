@@ -10,6 +10,8 @@ import '../data/network/network_source.dart';
 import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
 import '../data/security/hmac_verifier.dart';
+import '../data/security/pair_invite_client.dart';
+import '../data/security/pair_invite_service.dart';
 import '../data/security/paired_devices_store.dart';
 import '../data/security/pairing_client.dart';
 import '../data/security/pairing_service.dart';
@@ -21,6 +23,7 @@ import '../data/transport/http_file_server.dart';
 import '../data/transport/transfer_service_impl.dart';
 import '../domain/entities/device_identity.dart';
 import '../domain/entities/network_info.dart';
+import '../domain/entities/pair_invite.dart';
 import '../domain/entities/paired_device.dart';
 import '../domain/entities/peer.dart';
 import '../domain/entities/transfer.dart';
@@ -30,6 +33,7 @@ import '../domain/repositories/paired_devices_repository.dart';
 import '../domain/repositories/peer_cache_repository.dart';
 import '../domain/repositories/peer_discovery_repository.dart';
 import '../domain/repositories/transfer_service.dart';
+import '../presentation/pairing/invite_controller.dart';
 
 /// Composition root: every cross-layer binding is declared here so that
 /// presentation code never reaches into `data/` directly. To swap an impl
@@ -157,6 +161,40 @@ final pairingClientProvider = Provider<PairingClient>((ref) {
   return client;
 });
 
+/// Slice 4.6: coordinates the LAN pair-invite handshake. One instance
+/// per session — the in-flight registry must outlive the screens that
+/// open and close around a given invite.
+final pairInviteServiceProvider = Provider<PairInviteService>((ref) {
+  final svc = PairInviteService(
+    ref.watch(pairedDevicesRepoProvider),
+    ref.watch(deviceIdentityRepoProvider),
+  );
+  ref.onDispose(svc.dispose);
+  return svc;
+});
+
+/// Outbound HTTP for /pair-invite + /pair-finalize.
+final pairInviteClientProvider = Provider<PairInviteClient>((ref) {
+  final client = PairInviteClient();
+  ref.onDispose(client.close);
+  return client;
+});
+
+/// Reactive view of in-flight + completed invites. The fingerprint
+/// modal subscribes here to react to status transitions (peer
+/// declined, peer matched, expired).
+final pairInviteStreamProvider = StreamProvider<PairInvite>((ref) {
+  return ref.watch(pairInviteServiceProvider).invites;
+});
+
+final inviteControllerProvider = Provider<InviteController>((ref) {
+  return InviteController(
+    service: ref.watch(pairInviteServiceProvider),
+    client: ref.watch(pairInviteClientProvider),
+    identityRepo: ref.watch(deviceIdentityRepoProvider),
+  );
+});
+
 /// Production mDNS backend. Override with FakeMdnsBackend in tests so
 /// nothing touches real platform sockets.
 final mdnsBackendProvider = Provider<MdnsBackend>((ref) {
@@ -200,6 +238,7 @@ final httpFileServerProvider = Provider<HttpFileServer>((ref) {
     isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
     verifier: ref.watch(hmacVerifierProvider),
     pairing: ref.watch(pairingServiceProvider),
+    invite: ref.watch(pairInviteServiceProvider),
   );
   ref.onDispose(server.dispose);
   server.start();

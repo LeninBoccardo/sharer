@@ -10,6 +10,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:uuid/uuid.dart';
 
 import '../security/hmac_verifier.dart';
+import '../security/pair_invite_service.dart';
 import '../security/pairing_service.dart';
 import '../storage/downloads_locator.dart';
 import 'incoming_event.dart';
@@ -30,6 +31,7 @@ class HttpFileServer {
   final Stream<bool> _isTrusted;
   final HmacVerifier? _verifier;
   final PairingService? _pairing;
+  final PairInviteService? _invite;
   final int _port;
   final Uuid _uuid;
 
@@ -47,12 +49,14 @@ class HttpFileServer {
     required Stream<bool> isTrusted,
     HmacVerifier? verifier,
     PairingService? pairing,
+    PairInviteService? invite,
     int port = TransportProtocol.defaultPort,
     Uuid? uuid,
   })  : _downloads = downloads,
         _isTrusted = isTrusted,
         _verifier = verifier,
         _pairing = pairing,
+        _invite = invite,
         _port = port,
         _uuid = uuid ?? const Uuid();
 
@@ -134,6 +138,14 @@ class HttpFileServer {
     router.post(TransportProtocol.uploadPath, _handleUpload);
     if (_pairing != null) {
       router.post(TransportProtocol.pairPath, _handlePair);
+    }
+    // Slice 4.6: LAN pair-invite endpoints. Per docs/v1/architecture.md
+    // "Transport — strong rules" #2, these only exist on trusted
+    // networks; the desired-state reconciler above already gates the
+    // bind on trust state, so registering them here is sufficient.
+    if (_invite != null) {
+      router.post(TransportProtocol.pairInvitePath, _handlePairInvite);
+      router.post(TransportProtocol.pairFinalizePath, _handlePairFinalize);
     }
     final handler = const Pipeline().addHandler(router.call);
     try {
@@ -258,6 +270,114 @@ class HttpFileServer {
       } catch (_) {}
       _events.add(IncomingFailed(id: id, error: e.toString()));
       return Response.internalServerError(body: e.toString());
+    }
+  }
+
+  Future<Response> _handlePairInvite(Request request) async {
+    final invite = _invite!;
+    final raw = await request.readAsString();
+    Map<String, dynamic> j;
+    try {
+      j = jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      _log('pair-invite reject: malformed JSON');
+      return Response.badRequest();
+    }
+    Uint8List dec(String key) =>
+        Uint8List.fromList(base64Decode(j[key] as String));
+    String? inviteId;
+    String? initiatorId;
+    String? initiatorName;
+    Uint8List initiatorPublicKey;
+    Uint8List initiatorEphemeralPublicKey;
+    Uint8List nonce;
+    Uint8List signature;
+    DateTime expiresAt;
+    try {
+      inviteId = j['inviteId'] as String;
+      initiatorId = j['initiatorId'] as String;
+      initiatorName = (j['initiatorName'] as String?) ?? 'Unknown device';
+      initiatorPublicKey = dec('initiatorPublicKey');
+      initiatorEphemeralPublicKey = dec('initiatorEphemeralPublicKey');
+      nonce = dec('nonce');
+      signature = dec('signature');
+      expiresAt = DateTime.parse(j['expiresAt'] as String);
+    } catch (e) {
+      _log('pair-invite reject: missing/malformed field: $e');
+      return Response.badRequest();
+    }
+    final result = await invite.acceptInvite(
+      inviteId: inviteId,
+      initiatorId: initiatorId,
+      initiatorName: initiatorName,
+      initiatorPublicKey: initiatorPublicKey,
+      initiatorEphemeralPublicKey: initiatorEphemeralPublicKey,
+      nonce: nonce,
+      signature: signature,
+      expiresAt: expiresAt,
+    );
+    switch (result) {
+      case PairInviteAccepted(
+          :final responderId,
+          :final responderName,
+          :final responderPublicKey,
+          :final responderEphemeralPublicKey,
+          :final signature,
+        ):
+        return Response.ok(
+          jsonEncode({
+            'responderId': responderId,
+            'responderName': responderName,
+            'responderPublicKey': base64Encode(responderPublicKey),
+            'responderEphemeralPublicKey':
+                base64Encode(responderEphemeralPublicKey),
+            'signature': base64Encode(signature),
+          }),
+          headers: {'content-type': 'application/json'},
+        );
+      case PairInviteRateLimited(:final reason):
+        _log('pair-invite rate-limited: $reason');
+        return Response(429);
+      case PairInviteRejected(:final reason):
+        _log('pair-invite rejected: $reason');
+        return Response.unauthorized('');
+    }
+  }
+
+  Future<Response> _handlePairFinalize(Request request) async {
+    final invite = _invite!;
+    final raw = await request.readAsString();
+    Map<String, dynamic> j;
+    try {
+      j = jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return Response.badRequest();
+    }
+    String inviteId;
+    String senderId;
+    String verdict;
+    String signatureBase64;
+    try {
+      inviteId = j['inviteId'] as String;
+      senderId = j['senderId'] as String;
+      verdict = j['verdict'] as String;
+      signatureBase64 = j['signature'] as String;
+    } catch (_) {
+      return Response.badRequest();
+    }
+    final result = await invite.recordRemoteFinalize(
+      inviteId: inviteId,
+      senderId: senderId,
+      verdict: verdict,
+      signatureBase64: signatureBase64,
+    );
+    switch (result) {
+      case PairFinalizeRecorded():
+        return Response.ok('');
+      case PairFinalizeUnknown():
+        return Response.notFound('');
+      case PairFinalizeRejected():
+        return Response.unauthorized('');
     }
   }
 

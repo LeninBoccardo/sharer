@@ -14,6 +14,22 @@ abstract final class TransportProtocol {
   /// responder as a paired peer.
   static const String pairPath = '/pair';
 
+  /// Slice 4.6: LAN pair-invite — first leg of the authenticated DH
+  /// handshake. Initiator POSTs an Ed25519-signed JSON body containing
+  /// their ephemeral X25519 public key; responder validates, generates
+  /// their own ephemeral, derives the shared PSK, and replies with the
+  /// signed response payload. Both sides then display the per-pair
+  /// fingerprint for the user to confirm. Only registered on trusted
+  /// networks per docs/v1/security.md §6.
+  static const String pairInvitePath = '/pair-invite';
+
+  /// Slice 4.6: pair-finalize — second leg. After the user taps
+  /// Matches / Doesn't match on the fingerprint modal, both sides POST
+  /// their verdict here. The pair is committed only when both verdicts
+  /// are "match". HMAC'd with the in-flight PSK so a passive observer
+  /// cannot inject a verdict.
+  static const String pairFinalizePath = '/pair-finalize';
+
   /// URL-encoded filename. Decoded with [Uri.decodeComponent] on the
   /// server. Required.
   static const String headerFileName = 'x-sharer-filename';
