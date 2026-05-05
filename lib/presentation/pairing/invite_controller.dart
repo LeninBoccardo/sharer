@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../../data/security/pair_invite_client.dart';
 import '../../data/security/pair_invite_service.dart';
 import '../../data/security/tls_key_material_store.dart';
+import '../../data/transport/transport_protocol.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
@@ -126,6 +127,14 @@ class InviteController {
     final identity = await _identityRepo.get();
     final peerCertFp =
         _service.peerCertFingerprintFor(invite.inviteId);
+    // Slice 5.1.2: prefer the source-IP captured by the HTTP server
+    // when /pair-invite landed (responder side). Falls back to mDNS
+    // peer.host on the initiator side, where we don't have a captured
+    // IP but already used `peer.host` to send the original invite, so
+    // we know it routes.
+    final capturedHost = _service.peerHostFor(invite.inviteId);
+    final host = capturedHost ?? peer?.host;
+    final port = peer?.port ?? TransportProtocol.defaultPort;
     final signed = match
         ? await _service.markLocalMatched(invite.inviteId)
         : await _service.markLocalDeclined(invite.inviteId);
@@ -133,8 +142,9 @@ class InviteController {
       _log('finalize no-op: no in-flight ${invite.inviteId}');
       return;
     }
-    if (peer?.host == null || peer?.port == null) {
-      _log('finalize skip POST: peer not reachable');
+    if (host == null) {
+      _log('finalize skip POST: no host (peer=${peer?.host} '
+          'captured=$capturedHost)');
       return;
     }
     if (peerCertFp == null) {
@@ -145,8 +155,8 @@ class InviteController {
       return;
     }
     await _client.postFinalize(
-      host: peer!.host!,
-      port: peer.port!,
+      host: host,
+      port: port,
       inviteId: invite.inviteId,
       senderId: identity.id,
       verdict: match ? 'match' : 'decline',

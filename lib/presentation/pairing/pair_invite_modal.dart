@@ -113,9 +113,15 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
               color: theme.colorScheme.primaryContainer,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Center(
+            // FittedBox + softWrap:false keeps "12 34 56" on one line on
+            // narrow phones (real-device caught wrap on a 360dp Realme)
+            // while still letting wider screens render it large.
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
               child: Text(
                 pretty,
+                softWrap: false,
+                maxLines: 1,
                 style: const TextStyle(
                   fontFamily: 'monospace',
                   fontFeatures: [FontFeature.tabularFigures()],
@@ -146,7 +152,11 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
       ),
       actions: [
         TextButton(
-          onPressed: _busy ? null : () => _finalize(false),
+          // Once we're locally-matched the decline path no longer
+          // makes sense (the peer may be about to commit on its end);
+          // disable to avoid races. Slice 5.1.2: matches the multi-tap
+          // hardening on the Matches button.
+          onPressed: _busy || waiting ? null : () => _finalize(false),
           child: const Text("Doesn't match"),
         ),
         FilledButton(

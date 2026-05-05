@@ -107,6 +107,7 @@ class _Pending {
     required this.psk,
     required this.fingerprint,
     required this.expiresAt,
+    this.peerHost,
   });
 
   final String inviteId;
@@ -124,6 +125,15 @@ class _Pending {
   final Uint8List psk;
   final String fingerprint;
   final DateTime expiresAt;
+
+  /// Slice 5.1.2: on the **responder** side, the IP we observed the
+  /// initiator's `/pair-invite` POST coming *from* (URL-safe — IPv6
+  /// already wrapped in brackets). Preferred over `peer.host` from
+  /// mDNS when posting `/pair-finalize` back, because mDNS-resolved
+  /// hostnames on Windows (`Android_AOJYSW9X.local`) can route via the
+  /// wrong network interface and time out (real-device pairing freeze
+  /// caught during slice 5.2.1 validation).
+  String? peerHost;
 
   bool localMatched = false;
   bool localDeclined = false;
@@ -191,11 +201,20 @@ class PairInviteService {
     Uuid? uuid,
     Duration inviteTtl = _defaultInviteTtl,
     Duration declineCooldown = _defaultDeclineCooldown,
+    Duration expirySweepInterval = const Duration(seconds: 30),
   })  : _random = random ?? Random.secure(),
         _now = now ?? DateTime.now,
         _uuid = uuid ?? const Uuid(),
         _inviteTtl = inviteTtl,
-        _declineCooldown = declineCooldown;
+        _declineCooldown = declineCooldown {
+    // Slice 5.1.2: without a periodic sweep, an in-flight invite whose
+    // peer goes silent (e.g. the responder's reciprocal /pair-finalize
+    // never arrives) leaves the modal open forever — _purgeExpired()
+    // only runs when a state-mutating method is called. The timer is
+    // cheap (a single map walk per tick) and shuts down on dispose.
+    _expirySweep =
+        Timer.periodic(expirySweepInterval, (_) => _purgeExpired());
+  }
 
   final PairedDevicesRepository _paired;
   final DeviceIdentityRepository _identity;
@@ -210,6 +229,7 @@ class PairInviteService {
   final Map<String, DateTime> _declinedAt = {};
 
   final _invites = StreamController<PairInvite>.broadcast();
+  late final Timer _expirySweep;
 
   /// Stream of [PairInvite] state-machine snapshots. The UI subscribes
   /// to this to show / dismiss the fingerprint-confirm modal.
@@ -385,6 +405,7 @@ class PairInviteService {
     required Uint8List signature,
     required DateTime expiresAt,
     required String localCertFingerprintSha256,
+    String? initiatorRemoteHost,
   }) async {
     _purgeExpired();
 
@@ -476,6 +497,7 @@ class PairInviteService {
       expiresAt: expiresAt.isBefore(_now().add(_inviteTtl))
           ? expiresAt
           : _now().add(_inviteTtl),
+      peerHost: initiatorRemoteHost,
     );
     _pending[inviteId] = entry;
     _invites.add(_toInvite(entry, PairInviteStatus.awaitingFingerprint));
@@ -502,6 +524,16 @@ class PairInviteService {
   /// /pair-finalize match verdict. If the peer already POSTed match,
   /// the pair is committed here and the returned future emits the
   /// stored device.
+  ///
+  /// Always emits a stream event so the modal can disable the Matches
+  /// button between "user tapped" and "peer confirmed":
+  ///   - peer not yet matched → emit [PairInviteStatus.localMatched]
+  ///   - peer already matched → [_maybeCommit] emits
+  ///     [PairInviteStatus.completed] and removes the entry
+  /// Real-device validation (slice 5.2.1) caught the bug where this
+  /// method silently flipped the flag without emitting — the modal
+  /// re-enabled the button after the network round-trip and the user
+  /// could re-tap into a 404 cascade.
   Future<({Uint8List canonical, String signatureBase64})?> markLocalMatched(
     String inviteId,
   ) async {
@@ -523,6 +555,11 @@ class PairInviteService {
       verdict: 'match',
     );
     final mac = Hmac(sha256, p.psk).convert(canonical);
+    if (!p.peerMatched) {
+      // Surface the new state so the modal flips into "waiting for peer
+      // to confirm" and the button stays disabled.
+      _invites.add(_toInvite(p, PairInviteStatus.localMatched));
+    }
     await _maybeCommit(p);
     return (
       canonical: Uint8List.fromList(canonical),
@@ -614,6 +651,16 @@ class PairInviteService {
   String? peerCertFingerprintFor(String inviteId) =>
       _pending[inviteId]?.peerCertFingerprint;
 
+  /// Slice 5.1.2: returns the URL-safe host string the
+  /// [InviteController] should target for /pair-finalize. On the
+  /// **responder** side this is the initiator's source IP captured at
+  /// HTTP-handler time — preferred over `peer.host` from mDNS, which
+  /// on Windows resolves to a `.local` hostname that may not route via
+  /// the right interface. On the initiator side this is null (the
+  /// initiator already had the responder's IP from mDNS to send the
+  /// original /pair-invite).
+  String? peerHostFor(String inviteId) => _pending[inviteId]?.peerHost;
+
   /// Drop the in-flight invite without sending anything. Used when the
   /// initiator's POST /pair-invite failed at the network layer (peer
   /// unreachable, HTTP error, decline) — no sense keeping ephemeral
@@ -628,6 +675,7 @@ class PairInviteService {
   }
 
   Future<void> dispose() async {
+    _expirySweep.cancel();
     await _invites.close();
   }
 

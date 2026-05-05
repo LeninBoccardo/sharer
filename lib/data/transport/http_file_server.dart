@@ -329,6 +329,12 @@ class HttpFileServer {
       _log('pair-invite reject: server has no TLS material');
       return Response.internalServerError();
     }
+    // Slice 5.1.2: capture the source IP of the inbound POST so the
+    // reciprocal /pair-finalize goes back through the same route.
+    // Bonsoir on Windows can resolve the initiator's mDNS hostname to
+    // an unreachable IPv6 / wrong-interface IP (real-device freeze
+    // surfaced during slice 5.2.1 validation).
+    final initiatorRemoteHost = _readRemoteHost(request);
     final result = await invite.acceptInvite(
       inviteId: inviteId,
       initiatorId: initiatorId,
@@ -340,6 +346,7 @@ class HttpFileServer {
       signature: signature,
       expiresAt: expiresAt,
       localCertFingerprintSha256: tls.certificateFingerprintSha256,
+      initiatorRemoteHost: initiatorRemoteHost,
     );
     switch (result) {
       case PairInviteAccepted(
@@ -485,6 +492,23 @@ class HttpFileServer {
     } catch (_) {
       return value;
     }
+  }
+
+  /// Slice 5.1.2: extract the requester's remote address as a URL-safe
+  /// host string. shelf parks the underlying [HttpConnectionInfo] in
+  /// the request context under a stable key. IPv6 addresses are wrapped
+  /// in brackets so they parse correctly inside `https://$host:$port/`
+  /// URIs. Returns null when shelf can't surface the connection info
+  /// (in-memory tests, HTTP/2 paths) — the caller falls back to mDNS.
+  static String? _readRemoteHost(Request request) {
+    final info = request.context['shelf.io.connection_info']
+        as HttpConnectionInfo?;
+    if (info == null) return null;
+    final addr = info.remoteAddress;
+    if (addr.type == InternetAddressType.IPv6) {
+      return '[${addr.address}]';
+    }
+    return addr.address;
   }
 
   /// Strip path separators and parent-directory traversal so a

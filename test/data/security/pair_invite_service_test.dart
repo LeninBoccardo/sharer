@@ -425,6 +425,146 @@ void main() {
     expect(result, isA<PairInviteCompleteRejected>());
   });
 
+  test('markLocalMatched emits localMatched on the stream so the modal '
+      'can disable the button (slice 5.1.2 regression)', () async {
+    final r = await runHandshake();
+    final emitted = <PairInvite>[];
+    final sub = a.invites.listen(emitted.add);
+
+    // Peer hasn't matched yet — markLocalMatched should not commit but
+    // should emit a status event so the UI flips into "waiting".
+    await a.markLocalMatched(r.inviteId);
+    await pumpEventQueue();
+
+    expect(
+      emitted.where((e) =>
+          e.inviteId == r.inviteId &&
+          e.status == PairInviteStatus.localMatched),
+      isNotEmpty,
+      reason: 'localMatched status must surface so the modal disables '
+          'the Matches button before the peer\'s reciprocal POST arrives',
+    );
+    await sub.cancel();
+  });
+
+  test('markLocalMatched skips localMatched emit when peer already matched '
+      '(maybeCommit emits completed instead)', () async {
+    final r = await runHandshake();
+    // Peer's match arrives first.
+    final bMatch = await b.markLocalMatched(r.inviteId);
+    await a.recordRemoteFinalize(
+      inviteId: r.inviteId,
+      senderId: idB.id,
+      verdict: 'match',
+      signatureBase64: bMatch!.signatureBase64,
+    );
+
+    final emitted = <PairInvite>[];
+    final sub = a.invites.listen(emitted.add);
+    await a.markLocalMatched(r.inviteId);
+    await pumpEventQueue();
+
+    expect(
+      emitted.where(
+          (e) => e.status == PairInviteStatus.localMatched),
+      isEmpty,
+      reason: 'when peerMatched is already true, _maybeCommit emits '
+          'completed — no transient localMatched event needed',
+    );
+    expect(
+      emitted.any((e) => e.status == PairInviteStatus.completed),
+      isTrue,
+    );
+    await sub.cancel();
+  });
+
+  test('peerHostFor returns the initiator IP captured at acceptInvite '
+      '(slice 5.1.2 regression)', () async {
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
+    await b.acceptInvite(
+      inviteId: payload.inviteId,
+      initiatorId: payload.initiatorId,
+      initiatorName: payload.initiatorName,
+      initiatorPublicKey: payload.initiatorPublicKey,
+      initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
+      nonce: payload.nonce,
+      signature: payload.signature,
+      expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
+      initiatorRemoteHost: '192.168.68.42',
+    );
+
+    expect(b.peerHostFor(payload.inviteId), '192.168.68.42');
+    expect(a.peerHostFor(payload.inviteId), isNull,
+        reason: 'initiator side never captures a remote host — falls back '
+            'to peer.host from mDNS');
+  });
+
+  test('auto-expire timer fires expired without any other state mutation '
+      '(slice 5.1.2 regression — modal would hang forever otherwise)',
+      () async {
+    // Short TTL + sweep so the test runs in reasonable time. The bug
+    // we're guarding against is exactly this: an in-flight invite
+    // whose peer never responds, with no other state-mutation call
+    // to drag _purgeExpired() along.
+    final clock = DateTime.utc(2026, 5, 5, 12);
+    var nowFn = clock;
+    // Replace the default `b` with one that has a fast sweep, so the
+    // canonical signed by `a.createInvite(responderId: idB.id)` still
+    // verifies. The default `b` setUp instance is disposed manually
+    // here to avoid double-dispose in tearDown.
+    await b.dispose();
+    b = PairInviteService(
+      pairedB,
+      idB,
+      random: Random(1),
+      now: () => nowFn,
+      inviteTtl: const Duration(milliseconds: 100),
+      expirySweepInterval: const Duration(milliseconds: 50),
+    );
+
+    final emitted = <PairInvite>[];
+    final sub = b.invites.listen(emitted.add);
+
+    // Mint an invite-in-flight on the responder (b) side without
+    // anyone calling markLocalMatched / recordRemoteFinalize. `a` uses
+    // the unchanged outer `now`, but the invite carries an `expiresAt`
+    // we control, so b's sweep purges it once `nowFn` advances.
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
+    await b.acceptInvite(
+      inviteId: payload.inviteId,
+      initiatorId: payload.initiatorId,
+      initiatorName: payload.initiatorName,
+      initiatorPublicKey: payload.initiatorPublicKey,
+      initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
+      nonce: payload.nonce,
+      signature: payload.signature,
+      expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
+    );
+
+    // Advance the clock past the TTL and let the periodic sweep tick.
+    nowFn = clock.add(const Duration(seconds: 5));
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+
+    expect(
+      emitted.any((e) =>
+          e.inviteId == payload.inviteId &&
+          e.status == PairInviteStatus.expired),
+      isTrue,
+      reason: 'sweep timer should have purged the in-flight entry',
+    );
+    await sub.cancel();
+  });
+
   test('createInvite payload signature verifies under the initiator\'s '
       'long-term key', () async {
     final payload = await a.createInvite(
