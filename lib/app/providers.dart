@@ -13,6 +13,7 @@ import '../data/notifications/foreground_service_controller.dart';
 import '../data/notifications/foreground_service_gateway.dart';
 import '../data/notifications/notification_coordinator.dart';
 import '../data/notifications/notification_service.dart';
+import '../data/notifications/windows_tray_controller.dart';
 import '../data/security/hmac_verifier.dart';
 import '../data/security/pair_invite_client.dart';
 import '../data/security/pair_invite_service.dart';
@@ -344,6 +345,18 @@ final foregroundServiceControllerProvider =
     pairedDevices: ref.watch(pairedDevicesRepoProvider).watch(),
     gateway: ref.watch(foregroundServiceGatewayProvider),
   );
+  ref.onDispose(controller.dispose);
+  controller.start();
+  return controller;
+});
+
+/// Slice 5.2.3: Windows tray + close-to-tray. Read once at app boot
+/// so the close-to-tray prevent flag is set before the first frame
+/// renders. No-op on platforms other than Windows; the controller
+/// itself does the platform check.
+final windowsTrayControllerProvider =
+    Provider<WindowsTrayController>((ref) {
+  final controller = WindowsTrayController();
   ref.onDispose(controller.dispose);
   controller.start();
   return controller;

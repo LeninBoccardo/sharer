@@ -104,6 +104,10 @@ class NotificationService {
       id: NotificationIdSpace.transferActive(transferId),
       title: 'Receiving $fileName',
       body: 'From $peerName • $body',
+      // No `WindowsNotificationDetails.subtitle` — flutter_local_notifications
+      // on Windows renders the subtitle as a second body line, so
+      // setting it duplicates whatever the body already conveys
+      // (caught during slice 5.2.3 real-device validation).
       notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           TransferActiveChannel.id,
@@ -121,9 +125,6 @@ class NotificationService {
           // Tap routes to the app; action buttons are slice 5.2.4.
         ),
         iOS: const DarwinNotificationDetails(presentSound: false),
-        windows: WindowsNotificationDetails(
-          subtitle: 'From $peerName',
-        ),
       ),
     );
   }
@@ -141,7 +142,7 @@ class NotificationService {
       id: NotificationIdSpace.transferDone(transferId),
       title: 'Saved $fileName',
       body: 'Tap to open • Saved to Downloads',
-      notificationDetails: NotificationDetails(
+      notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           TransferDoneChannel.id,
           TransferDoneChannel.name,
@@ -150,10 +151,7 @@ class NotificationService {
           priority: Priority.defaultPriority,
           category: AndroidNotificationCategory.status,
         ),
-        iOS: const DarwinNotificationDetails(),
-        windows: const WindowsNotificationDetails(
-          subtitle: 'Saved to Downloads',
-        ),
+        iOS: DarwinNotificationDetails(),
       ),
       payload: 'transfer_done:$transferId|$savedPath',
     );
@@ -193,7 +191,7 @@ class NotificationService {
       id: NotificationIdSpace.pairInvite(inviteId),
       title: 'Pair with $peerName?',
       body: 'Verify code: $spaced',
-      notificationDetails: NotificationDetails(
+      notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           PairInviteChannel.id,
           PairInviteChannel.name,
@@ -202,10 +200,7 @@ class NotificationService {
           priority: Priority.high,
           category: AndroidNotificationCategory.message,
         ),
-        iOS: const DarwinNotificationDetails(),
-        windows: WindowsNotificationDetails(
-          subtitle: 'Verify code: $spaced',
-        ),
+        iOS: DarwinNotificationDetails(),
       ),
       payload: 'pair_invite:$inviteId',
     );

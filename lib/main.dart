@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'app/app.dart';
 import 'app/providers.dart';
@@ -11,6 +13,14 @@ import 'app/providers.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
+
+  // Slice 5.2.3: must be called before any window_manager API. The
+  // tray controller's `setPreventClose(true)` runs during the
+  // ProviderContainer warm-up below, so window_manager has to be
+  // ready by then. iOS/Android skip the desktop init entirely.
+  if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+    await windowManager.ensureInitialized();
+  }
 
   // Slice 5.2.2: must be called before runApp so the FG-service-isolate
   // ↔ main-isolate port is wired before any startService call. No-op
@@ -34,6 +44,10 @@ Future<void> main() async {
   // pair persisted, the first stream emission will fire startService
   // without UI involvement.
   container.read(foregroundServiceControllerProvider);
+  // Slice 5.2.3: install the Windows tray icon + flip the
+  // close-to-tray prevent flag before the first frame paints.
+  // Controller is platform-gated so this is a no-op on non-Windows.
+  container.read(windowsTrayControllerProvider);
 
   runApp(
     UncontrolledProviderScope(
