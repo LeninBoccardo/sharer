@@ -105,6 +105,14 @@ dependencies:
   # "Background behavior".
   flutter_local_notifications: ^21.0.0
 
+  # Slice 5.2.2: Android foreground service so the HTTP server +
+  # mDNS listener stay alive when the user backgrounds the app and
+  # paired peers can still send files. Lifecycle is bound to
+  # `pairedDevicesStreamProvider` (start when count > 0, stop when
+  # 0). No-op on Windows / iOS — see
+  # data/notifications/foreground_service_controller.dart.
+  flutter_foreground_task: ^9.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -9,6 +9,8 @@ import '../data/identity/platform_device_name.dart';
 import '../data/network/network_source.dart';
 import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
+import '../data/notifications/foreground_service_controller.dart';
+import '../data/notifications/foreground_service_gateway.dart';
 import '../data/notifications/notification_coordinator.dart';
 import '../data/notifications/notification_service.dart';
 import '../data/security/hmac_verifier.dart';
@@ -321,4 +323,28 @@ final notificationCoordinatorProvider =
   ref.onDispose(coord.dispose);
   coord.start();
   return coord;
+});
+
+// ----- Foreground service (slice 5.2.2) -----
+
+/// Production foreground-service gateway. Override with a fake in
+/// tests so widget / integration tests don't try to start a real
+/// Android service through method channels.
+final foregroundServiceGatewayProvider =
+    Provider<ForegroundServiceGateway>((ref) {
+  return FlutterForegroundServiceGateway();
+});
+
+/// Lifecycle controller bound to [pairedDevicesRepoProvider]'s stream.
+/// Read once at app boot so the service starts (or doesn't) based on
+/// whether there's anyone paired before the user navigates anywhere.
+final foregroundServiceControllerProvider =
+    Provider<ForegroundServiceController>((ref) {
+  final controller = ForegroundServiceController(
+    pairedDevices: ref.watch(pairedDevicesRepoProvider).watch(),
+    gateway: ref.watch(foregroundServiceGatewayProvider),
+  );
+  ref.onDispose(controller.dispose);
+  controller.start();
+  return controller;
 });

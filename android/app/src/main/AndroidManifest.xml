@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
     <!-- Slice 2 (mDNS + network watcher): see docs/v1/security.md and docs/v1/architecture.md. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -13,6 +14,14 @@
          so the user sees the system permission dialog before any
          transfer notification can fail silently. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Slice 5.2.2 (foreground service): keeps the HTTP server + mDNS
+         listener alive while the user has paired peers. Type is
+         `dataSync` — files arrive via the LAN, no microphone /
+         location / camera surfaces are involved. The package's own
+         manifest contributes FOREGROUND_SERVICE + WAKE_LOCK +
+         RECEIVE_BOOT_COMPLETED + POST_NOTIFICATIONS so we don't repeat
+         them here. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application
         android:label="sharer"
         android:name="${applicationName}"
@@ -44,6 +53,17 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Slice 5.2.2: override the package's <service> with our
+             explicit foregroundServiceType=dataSync. Required on
+             Android 14+: the type passed to startForeground() must
+             intersect the type declared here. Do NOT change the
+             android:name — it must match the class shipped by the
+             package. -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            tools:replace="android:foregroundServiceType" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

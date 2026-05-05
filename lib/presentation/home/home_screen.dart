@@ -13,6 +13,7 @@ import '../pairing/invite_controller.dart';
 import '../pairing/pair_invite_modal.dart';
 import '../pairing/show_pair_screen.dart';
 import '../transfers/transfers_section.dart';
+import 'battery_optimization_banner.dart';
 import 'quiet_mode_banner.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -88,6 +89,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const QuietModeBanner(),
+              const BatteryOptimizationBanner(),
               Text('Nearby devices', style: theme.textTheme.titleLarge),
               const SizedBox(height: 12),
               peersAsync.when(
