@@ -133,7 +133,7 @@ class _BroadcastingTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final announcing = ref.watch(peerAnnouncingProvider).valueOrNull ?? false;
+    final announcing = ref.watch(peerAnnouncingProvider).value ?? false;
 
     return Card(
       child: Padding(
@@ -185,8 +185,8 @@ class _CurrentNetworkCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final network = ref.watch(currentNetworkProvider).valueOrNull;
-    final isTrusted = ref.watch(isOnTrustedNetworkProvider).valueOrNull ?? false;
+    final network = ref.watch(currentNetworkProvider).value;
+    final isTrusted = ref.watch(isOnTrustedNetworkProvider).value ?? false;
 
     return Card(
       child: Padding(
@@ -276,7 +276,7 @@ class _TrustedNetworksSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final trusted = ref.watch(trustedNetworksProvider).valueOrNull ?? const {};
+    final trusted = ref.watch(trustedNetworksProvider).value ?? const {};
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

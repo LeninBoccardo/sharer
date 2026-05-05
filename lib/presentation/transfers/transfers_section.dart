@@ -24,7 +24,7 @@ class _TransfersSectionState extends ConsumerState<TransfersSection> {
   Widget build(BuildContext context) {
     ref.listen<AsyncValue<List<Transfer>>>(transfersStreamProvider,
         (_, next) {
-      final list = next.valueOrNull;
+      final list = next.value;
       if (list == null) return;
       for (final t in list) {
         if (t.direction == TransferDirection.receiving &&
@@ -41,7 +41,7 @@ class _TransfersSectionState extends ConsumerState<TransfersSection> {
       }
     });
 
-    final transfers = ref.watch(transfersStreamProvider).valueOrNull ?? const [];
+    final transfers = ref.watch(transfersStreamProvider).value ?? const [];
     if (transfers.isEmpty) return const SizedBox.shrink();
 
     final theme = Theme.of(context);

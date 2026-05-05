@@ -17,7 +17,9 @@ class BonsoirMdnsBackend implements MdnsBackend {
       attributes: spec.attributes,
     );
     final b = BonsoirBroadcast(service: svc);
-    await b.ready;
+    // bonsoir 6 renamed `ready` → `initialize()` and the event types
+    // are now a sealed-class hierarchy instead of an enum on `.type`.
+    await b.initialize();
     await b.start();
     return _BonsoirBroadcaster(b);
   }
@@ -25,7 +27,7 @@ class BonsoirMdnsBackend implements MdnsBackend {
   @override
   Future<MdnsObserver> observe({required String type}) async {
     final discovery = BonsoirDiscovery(type: type);
-    await discovery.ready;
+    await discovery.initialize();
     final controller = StreamController<MdnsEvent>.broadcast();
 
     // CRITICAL: subscribe BEFORE start(). bonsoir's eventStream is a
@@ -34,36 +36,36 @@ class BonsoirMdnsBackend implements MdnsBackend {
     // returning and listen() attaching are dropped. Slice 2.3 caught
     // this on real Android devices.
     final sub = discovery.eventStream?.listen((event) async {
-      final svc = event.service;
-      switch (event.type) {
-        case BonsoirDiscoveryEventType.discoveryServiceFound:
-          if (svc != null) {
-            controller.add(MdnsEvent(
-              kind: MdnsEventKind.found,
-              service: _toMdnsService(svc),
-            ));
-            // Auto-resolve to get host/port. Bonsoir delivers a separate
-            // discoveryServiceResolved event later.
-            unawaited(svc.resolve(discovery.serviceResolver));
-          }
-        case BonsoirDiscoveryEventType.discoveryServiceResolved:
-          if (svc is ResolvedBonsoirService) {
-            controller.add(MdnsEvent(
-              kind: MdnsEventKind.resolved,
-              service: _toMdnsService(svc),
-            ));
-          }
-        case BonsoirDiscoveryEventType.discoveryServiceLost:
-          if (svc != null) {
-            controller.add(MdnsEvent(
-              kind: MdnsEventKind.lost,
-              service: _toMdnsService(svc),
-            ));
-          }
-        case BonsoirDiscoveryEventType.discoveryServiceResolveFailed:
-        case BonsoirDiscoveryEventType.discoveryStarted:
-        case BonsoirDiscoveryEventType.discoveryStopped:
-        case BonsoirDiscoveryEventType.unknown:
+      switch (event) {
+        case BonsoirDiscoveryServiceFoundEvent(:final service):
+          controller.add(MdnsEvent(
+            kind: MdnsEventKind.found,
+            service: _toMdnsService(service),
+          ));
+          // Auto-resolve to get host/port. Bonsoir delivers a separate
+          // BonsoirDiscoveryServiceResolvedEvent later.
+          unawaited(service.resolve(discovery.serviceResolver));
+        case BonsoirDiscoveryServiceResolvedEvent(:final service):
+          controller.add(MdnsEvent(
+            kind: MdnsEventKind.resolved,
+            service: _toMdnsService(service),
+          ));
+        case BonsoirDiscoveryServiceUpdatedEvent(:final service):
+          // Late TXT/host updates — surface as a fresh resolved event
+          // so the orchestrator can pick up the new attributes.
+          controller.add(MdnsEvent(
+            kind: MdnsEventKind.resolved,
+            service: _toMdnsService(service),
+          ));
+        case BonsoirDiscoveryServiceLostEvent(:final service):
+          controller.add(MdnsEvent(
+            kind: MdnsEventKind.lost,
+            service: _toMdnsService(service),
+          ));
+        case BonsoirDiscoveryStartedEvent():
+        case BonsoirDiscoveryStoppedEvent():
+        case BonsoirDiscoveryServiceResolveFailedEvent():
+        case BonsoirDiscoveryUnknownEvent():
           break;
       }
     });
@@ -72,8 +74,11 @@ class BonsoirMdnsBackend implements MdnsBackend {
     return _BonsoirObserver(discovery, controller, sub);
   }
 
+  /// In bonsoir 6 there is no separate `ResolvedBonsoirService` class —
+  /// the same [BonsoirService] just has its nullable [host] populated
+  /// once the resolve step succeeds. Treat host == null as unresolved.
   static MdnsService _toMdnsService(BonsoirService svc) {
-    final host = svc is ResolvedBonsoirService ? svc.host : null;
+    final host = svc.host;
     return MdnsService(
       name: svc.name,
       attributes: Map<String, String>.from(svc.attributes),

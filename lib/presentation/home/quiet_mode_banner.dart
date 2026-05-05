@@ -13,8 +13,8 @@ class QuietModeBanner extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final isTrusted = ref.watch(isOnTrustedNetworkProvider).valueOrNull ?? false;
-    final network = ref.watch(currentNetworkProvider).valueOrNull;
+    final isTrusted = ref.watch(isOnTrustedNetworkProvider).value ?? false;
+    final network = ref.watch(currentNetworkProvider).value;
 
     if (isTrusted || network == null || !network.hasNetwork) {
       return const SizedBox.shrink();

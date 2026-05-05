@@ -112,7 +112,7 @@ class _ScanPairState extends ConsumerState<ScanPairScreen> {
       children: [
         MobileScanner(
           fit: BoxFit.cover,
-          errorBuilder: (context, error, _) =>
+          errorBuilder: (context, error) =>
               _CameraUnavailable(error: error, theme: theme),
           onDetect: (capture) {
             for (final code in capture.barcodes) {

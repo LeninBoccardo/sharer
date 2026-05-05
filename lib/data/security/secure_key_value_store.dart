@@ -18,16 +18,15 @@ abstract class SecureKeyValueStore {
 }
 
 /// Production adapter over `flutter_secure_storage`. Default options use
-/// each platform's strongest available backing (Keystore EncryptedSharedPrefs
-/// on Android; DPAPI on Windows; Keychain on iOS/macOS).
+/// each platform's strongest available backing — Keystore-backed custom
+/// ciphers on Android (the old EncryptedSharedPreferences path was
+/// deprecated by Google's Jetpack Security library and dropped in
+/// flutter_secure_storage 10); DPAPI on Windows; Keychain on iOS/macOS.
 class FlutterSecureStorageAdapter implements SecureKeyValueStore {
   final FlutterSecureStorage _storage;
 
   FlutterSecureStorageAdapter([FlutterSecureStorage? storage])
-      : _storage = storage ??
-            const FlutterSecureStorage(
-              aOptions: AndroidOptions(encryptedSharedPreferences: true),
-            );
+      : _storage = storage ?? const FlutterSecureStorage();
 
   @override
   Future<String?> read(String key) => _storage.read(key: key);

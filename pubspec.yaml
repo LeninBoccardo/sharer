@@ -37,22 +37,25 @@ dependencies:
 
   # State management + DI. Used as the composition-root mechanism for the
   # Clean Architecture layers (see docs/v1/architecture.md).
-  flutter_riverpod: ^2.5.1
+  flutter_riverpod: ^3.3.1
 
   # mDNS / DNS-SD discovery + announce. Picked over the Flutter team's
   # multicast_dns package because that one is discovery-only (no announce).
-  bonsoir: ^5.1.10
+  bonsoir: ^6.0.1
 
   # Network watcher inputs.
-  connectivity_plus: ^6.1.0
-  network_info_plus: ^6.1.1
+  # network_info_plus capped at 6.x because 7+ requires win32 ^6.x,
+  # which conflicts with file_picker 11.x's win32 ^5.x pin. Bump
+  # together with file_picker.
+  connectivity_plus: ^6.1.4
+  network_info_plus: ^6.1.4
 
   # Lightweight persistence for device identity, trusted networks, peer cache.
   shared_preferences: ^2.3.3
 
   # Secret-grade persistence for paired-device PSKs and (slice 5) TLS keys.
   # Backed by Keystore on Android, DPAPI on Windows, Keychain on iOS/macOS.
-  flutter_secure_storage: ^9.2.4
+  flutter_secure_storage: ^10.0.0
 
   # HMAC-SHA256 for the X-Sharer-Sig request authentication header.
   crypto: ^3.0.6
@@ -67,13 +70,16 @@ dependencies:
   # responder. mobile_scanner is camera-based; on desktops without a
   # camera we fall back to the typed-code entry.
   qr_flutter: ^4.1.0
-  mobile_scanner: ^5.2.3
+  mobile_scanner: ^7.2.0
 
   # Stable random device IDs.
   uuid: ^4.5.1
 
   # Per-platform device name resolution (default identity name).
-  device_info_plus: ^11.2.0
+  # Capped at 12.x because file_picker 11.x pins win32 ^5.x, while
+  # device_info_plus 13.x requires win32 ^6.x. Bump to 13 once
+  # file_picker catches up.
+  device_info_plus: ^12.4.0
 
   # HTTP transport. shelf for the receiving server; dart:io HttpClient
   # for sending (already available, no extra dep).
@@ -81,7 +87,7 @@ dependencies:
   shelf_router: ^1.1.4
 
   # File picking on send + Downloads dir resolution on receive.
-  file_picker: ^8.1.6
+  file_picker: ^11.0.2
   path_provider: ^2.1.5
 
   # MIME sniffing for outgoing Content-Type header.
