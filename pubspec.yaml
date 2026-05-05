@@ -44,11 +44,11 @@ dependencies:
   bonsoir: ^6.0.1
 
   # Network watcher inputs.
-  # network_info_plus capped at 6.x because 7+ requires win32 ^6.x,
+  # network_info_plus stays at 7.x because 8.x requires win32 ^6.x,
   # which conflicts with file_picker 11.x's win32 ^5.x pin. Bump
-  # together with file_picker.
-  connectivity_plus: ^6.1.4
-  network_info_plus: ^6.1.4
+  # together with file_picker (currently file_picker 12 is in beta).
+  connectivity_plus: ^7.1.1
+  network_info_plus: ^7.0.0
 
   # Lightweight persistence for device identity, trusted networks, peer cache.
   shared_preferences: ^2.3.3
@@ -97,6 +97,13 @@ dependencies:
 
   # MIME sniffing for outgoing Content-Type header.
   mime: ^2.0.0
+
+  # Slice 5.2.1: cross-platform local notifications. Used for the
+  # incoming-transfer + pair-invite surfaces. Android channel posture
+  # (MIN for idle / LOW for active) is configured in
+  # data/notifications/notification_service.dart per docs/v1/architecture.md
+  # "Background behavior".
+  flutter_local_notifications: ^21.0.0
 
 dev_dependencies:
   flutter_test:
