@@ -9,6 +9,10 @@
     <!-- Slice 4.3 (pairing): scanning the other device's QR via mobile_scanner. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Slice 5.2.1 (notifications): runtime-requested on Android 13+
+         so the user sees the system permission dialog before any
+         transfer notification can fail silently. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:label="sharer"
         android:name="${applicationName}"

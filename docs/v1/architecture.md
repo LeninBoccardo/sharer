@@ -92,9 +92,30 @@ This is the path that defines the app's perceived speed. Every step counts.
 
 ## Background behavior
 
-- **Mobile:** no foreground service when idle. A foreground service starts only when an active transfer is in flight (Android requirement for sustained network work). The persistent notification disappears once transfers complete.
-- **Desktop:** the app may run in the system tray. Idle cost is the cheap mDNS listener and the SSID poll.
-- **All platforms:** on an unrecognized network, the watcher enters quiet mode — mDNS announcer off, HTTP server still up. Paired peers with cached IPs and pinned certs can still reach this device. See [security.md](security.md) for the full trust model.
+The goal is "leave the app closed, still receive files from paired peers." Android's policy on backgrounded networking forces a compromise: any process that keeps a TCP socket alive in the background must run as a foreground service with a visible notification. There is no documented escape hatch. The slice 5.2 model below threads the needle by making that notification as quiet as the OS allows; FCM relay alternatives are documented + rejected in [open-questions.md OQ-10](open-questions.md#oq-10).
+
+### Android (slice 5.2)
+
+- **Foreground service while paired count > 0.** Started when the user has at least one [`PairedDevice`](../../lib/domain/entities/paired_device.dart) and stopped when the last pair is forgotten. Type = `dataSync` (Android 14+ requirement). Implemented via [`flutter_foreground_task`](https://pub.dev/packages/flutter_foreground_task).
+- **Idle notification on `IMPORTANCE_MIN`.** Channel `service_idle`. Title "Sharer", small monochrome icon, no sound, no peek, no lock-screen presence, no badge. Effectively a single collapsed line at the bottom of the notification shade — what WhatsApp's "connection" notification looks like.
+- **Transfer notifications use a separate channel** (`transfer_active`, `IMPORTANCE_LOW` with progress) so heads-up + progress are visible during an actual transfer. The 5.2.x coordinator cancels the idle notification while a transfer is active and restores it when the transfer ends, so the user never sees both at once.
+- **Runtime `POST_NOTIFICATIONS` (Android 13+).** First-launch prompt; on deny, fall back to in-app banners — the FG service still runs but its idle notification is silent (the OS-mandated visible notification is still there, just minimal).
+- **Battery-optimization whitelist prompt.** OEMs with aggressive killers (Xiaomi, Oppo, OnePlus, Huawei) will kill the FG service anyway. On first pair, surface a one-shot dialog deep-linking to system settings.
+
+### Windows (slice 5.2)
+
+- **System tray + close-to-tray.** Implemented via [`tray_manager`](https://pub.dev/packages/tray_manager) + `window_manager`. Closing the window hides it; only the tray menu's "Quit" actually exits the process.
+- **No persistent notification.** Tray icon is the only ambient indicator. Toasts via [`flutter_local_notifications`](https://pub.dev/packages/flutter_local_notifications) fire on incoming transfer / pair invite and on completion.
+- **Single-instance lock** so re-launching from Start Menu unhides the existing window instead of spawning a second one.
+
+### iOS
+
+Out of scope per [OQ-9](open-questions.md#oq-9). Plugins must initialize without crashing on iOS; no FG-equivalent functionality is wired. Foreground-only is the documented behavior.
+
+### All platforms
+
+- On an unrecognized network the watcher enters quiet mode — mDNS announcer off, HTTP server still up. Paired peers with cached IPs and pinned certs can still reach this device. See [security.md](security.md) for the full trust model.
+- Pair-invite notifications are surfaced **only on trusted networks**, because [`/pair-invite`](#transport--strong-rules) is registered only on trusted networks and the route returns 404 otherwise. There is no "buffered invite" UX.
 
 ## Streaming and memory
 

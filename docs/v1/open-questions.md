@@ -92,7 +92,16 @@ Unresolved design calls. Each entry should be **closed** (with the decision and 
 
 **Default if undecided:** ship v2 directly.
 
-**Answer:** ship v2 directly. Android foreground service for the mDNS listener + HTTP server while paired peers exist; Windows tray icon with run-on-startup option; `flutter_local_notifications` for incoming transfer prompts and pair invites. iOS is foreground-only per OQ-9.
+**Answer:** ship v2 directly (option D from the slice 5.2 design discussion). Android foreground service (`dataSync` type) for the mDNS listener + HTTP server while paired count > 0; idle notification on `IMPORTANCE_MIN` (collapsed, silent), replaced by an `IMPORTANCE_LOW` transfer-progress notification while a transfer runs. Windows: `tray_manager` + close-to-tray; no persistent notification; toasts via `flutter_local_notifications`. iOS foreground-only per OQ-9. Pair-invite notifications surface only on trusted networks since `/pair-invite` is itself trust-gated.
+
+**FCM relay rejected for v1.** A push-relay variant (small server we operate, FCM data messages wake the killed app for ~10 s, app starts a FG service to handle the actual transfer) was considered as a way to avoid the idle-notification entirely. Rejected because it (a) adds infrastructure we'd own, (b) leaks the social graph to the relay operator even though file contents stay LAN-private, and (c) doesn't actually escape the FG-service notification while the transfer runs — it only hides the *idle* notification. The collapsed `IMPORTANCE_MIN` channel is a better cost/benefit. Revisit if v2 ships LAN-roaming over relay (slice 6.x), since the same primitive would be reused.
+
+**Implementation slicing:**
+
+- 5.2.1 — `flutter_local_notifications` + transfer + invite notifications (cross-platform plumbing, app must be foregrounded)
+- 5.2.2 — Android FG service + idle notification, lifecycle bound to paired count
+- 5.2.3 — Windows tray + close-to-tray + single-instance lock
+- 5.2.4 — Notification action buttons + cold-start routing
 
 ## OQ-11 — Encryption scope (slice 5.3)
 

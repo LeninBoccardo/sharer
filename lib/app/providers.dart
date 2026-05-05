@@ -9,6 +9,8 @@ import '../data/identity/platform_device_name.dart';
 import '../data/network/network_source.dart';
 import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
+import '../data/notifications/notification_coordinator.dart';
+import '../data/notifications/notification_service.dart';
 import '../data/security/hmac_verifier.dart';
 import '../data/security/pair_invite_client.dart';
 import '../data/security/pair_invite_service.dart';
@@ -295,4 +297,28 @@ final transferServiceProvider = Provider<TransferService>((ref) {
 
 final transfersStreamProvider = StreamProvider<List<Transfer>>((ref) {
   return ref.watch(transferServiceProvider).watchAll();
+});
+
+// ----- Notifications (slice 5.2.1) -----
+
+/// Singleton notification platform wrapper. Override in tests with a
+/// fake plugin so widget tests don't hit MethodChannels.
+final notificationServiceProvider = Provider<NotificationService>((ref) {
+  return NotificationService();
+});
+
+/// Coordinator that wires the transfer + invite + trust streams into
+/// the notification service. Read once at app boot (see [main]) so it
+/// starts listening before any incoming activity can be missed.
+final notificationCoordinatorProvider =
+    Provider<NotificationCoordinator>((ref) {
+  final coord = NotificationCoordinator(
+    service: ref.watch(notificationServiceProvider),
+    transfers: ref.watch(transferServiceProvider).watchAll(),
+    invites: ref.watch(pairInviteServiceProvider).invites,
+    isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
+  );
+  ref.onDispose(coord.dispose);
+  coord.start();
+  return coord;
 });

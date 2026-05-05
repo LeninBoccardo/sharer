@@ -13,6 +13,14 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Slice 5.2.1: flutter_local_notifications uses java.time APIs
+        // that aren't in the platform's core library on older Android
+        // versions, so D8 needs to desugar them in. Without this the
+        // AAR-metadata check fails with:
+        //   "Dependency ':flutter_local_notifications' requires core
+        //    library desugaring to be enabled for :app."
+        // See https://developer.android.com/studio/write/java8-support
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -41,4 +49,12 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Slice 5.2.1: pairs with `isCoreLibraryDesugaringEnabled` above.
+    // Required for flutter_local_notifications' use of java.time on
+    // older Android versions. Bump together with AGP / Flutter SDK if
+    // a newer release demands it.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

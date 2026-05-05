@@ -26,18 +26,30 @@ Total taps inside sharer in the happy path: **1**.
 
 ## Primary flow — receiving a file
 
+In slice 5.2 the receiver is reachable even with the app closed (Android: foreground service; Windows: tray).
+
 ```text
-Other device starts sending → push-style notification on this device:
-   "Phone is sending IMG_1234.jpg (4.2 MB) — Accept / Reject"
+Other device starts sending → notification on this device:
+   "Realme is sending IMG_1234.jpg (4.2 MB)"  + progress bar that updates
   ↓
-Tap Accept
+While transfer runs, the heads-up notification collapses into the shade with progress
   ↓
-Transfer screen with progress
-  ↓
-On complete: notification "Saved to Downloads" with "Open" action
+On complete: notification "Saved IMG_1234.jpg to Downloads" with "Open" action
 ```
 
-Auto-accept from paired devices is offered as a per-peer setting — defaulted off in v1 (always prompt), with a clear toggle in the peer's detail screen. (Open question — see [open-questions.md](open-questions.md).)
+Per OQ-2, transfers from paired peers are accepted automatically in v1 — there is no "Accept / Reject" prompt for paired devices. Per-peer trust posture is an open polish item; if a future version adds a "confirm before save" toggle, this notification gains the action buttons. The protocol-level accept happens when the request arrives; the user sees only the resulting "incoming" notification and can cancel mid-transfer from the Transfers section.
+
+## Background presence
+
+What's persistent and what isn't, per platform:
+
+| Platform | Idle ambient indicator | Transfer-time notification | Notes |
+| --- | --- | --- | --- |
+| Android | One collapsed line in the notification shade (channel `service_idle`, `IMPORTANCE_MIN`) — only present while paired count > 0 | Heads-up + progress on `transfer_active` (`IMPORTANCE_LOW`); idle notification cancelled while transfer runs | OS forces *some* notification while the FG service runs. We minimise it; the user can long-press → channel settings → mute the channel entirely if they prefer (then it's invisible but still surfacing transfers). |
+| Windows | Tray icon (overflowable) | Toast on start + completion | Closing the window hides to tray. Only Quit from the tray menu exits. |
+| iOS | None (foreground-only per [OQ-9](open-questions.md)) | Foreground only | App must be open; documented limitation. |
+
+The "no notification at all when idle" UX you might expect from a desktop chat app is achievable on Windows but not on Android. This is an OS rule, not a Sharer choice.
 
 ## Standalone app entry
 
