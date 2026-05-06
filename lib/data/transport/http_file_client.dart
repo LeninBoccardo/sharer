@@ -19,6 +19,25 @@ class UploadResult {
   const UploadResult({required this.savedPath, required this.bytesSent});
 }
 
+/// Slice 5.4: typed failure for a non-2xx upload response. The status
+/// code lets the transfer layer take a status-specific action — a 401
+/// from a known paired peer triggers the reactive forget path; other
+/// codes just propagate as a regular failed transfer.
+class UploadStatusException implements Exception {
+  UploadStatusException({
+    required this.statusCode,
+    required this.body,
+    required this.uri,
+  });
+  final int statusCode;
+  final String body;
+  final Uri uri;
+
+  @override
+  String toString() => 'Upload failed: $statusCode ${body.isEmpty ? '' : body} '
+      '(POST $uri)';
+}
+
 /// Sending side of the file-transfer transport. Streams the payload in
 /// a single chunked POST — never reads the whole file into memory.
 ///
@@ -150,8 +169,9 @@ class HttpFileClient {
       final body = await response.transform(utf8.decoder).join();
 
       if (response.statusCode != HttpStatus.ok) {
-        throw HttpException(
-          'Upload failed: ${response.statusCode} $body',
+        throw UploadStatusException(
+          statusCode: response.statusCode,
+          body: body,
           uri: uri,
         );
       }

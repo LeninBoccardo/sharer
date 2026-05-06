@@ -45,6 +45,17 @@ class PairInviteChannel {
       'Another device on this Wi-Fi wants to pair with Sharer.';
 }
 
+/// Slice 5.4: a paired peer just unilaterally unpaired this device, or
+/// we inferred it from a 401 on a signed request. `IMPORTANCE_DEFAULT`
+/// — informational, plays a sound so the user knows their device list
+/// just changed under them, but doesn't peek.
+class PeerUnpairedChannel {
+  static const id = 'peer_unpaired';
+  static const name = 'Peer unpaired';
+  static const description =
+      'A device that was paired with Sharer just unpaired this side.';
+}
+
 /// Slice 5.2.4: stable action ids embedded in notification action
 /// buttons. The plugin echoes these back via [NotificationResponse.actionId]
 /// when the user taps a button so the router can dispatch.
@@ -79,6 +90,9 @@ class NotificationIdSpace {
 
   static int pairInvite(String inviteId) =>
       _hashIntoRange(inviteId, base: 0x0300_0000, span: 0x00FF_FFFF);
+
+  static int peerUnpaired(String peerId) =>
+      _hashIntoRange(peerId, base: 0x0400_0000, span: 0x00FF_FFFF);
 
   /// FNV-1a 32-bit, then folded into [base, base+span). Deterministic
   /// across runs for the same input string — important because cold

@@ -30,6 +30,20 @@ abstract final class TransportProtocol {
   /// cannot inject a verdict.
   static const String pairFinalizePath = '/pair-finalize';
 
+  /// Slice 5.4: proactive "I'm forgetting you" notification. When a
+  /// device taps Forget on a paired peer, before the local removal we
+  /// fire a signed POST here so the peer can reciprocally remove the
+  /// PairedDevice on their side and surface a "X has unpaired you"
+  /// notification. Body shape: `{senderId, signature}`. The signature
+  /// is HMAC-SHA256 over `sharer-peer-forgot-you-v1\n<senderId>` with
+  /// the per-pair PSK — same pattern as `/pair-finalize`. The route is
+  /// registered alongside `/upload`, not the pair routes, because the
+  /// peer must be reachable here even on networks the receiver hasn't
+  /// flagged trusted (the route still verifies HMAC against a known
+  /// PairedDevice, so an unknown sender can't trigger arbitrary state
+  /// changes).
+  static const String peerForgotYouPath = '/peer-forgot-you';
+
   /// URL-encoded filename. Decoded with [Uri.decodeComponent] on the
   /// server. Required.
   static const String headerFileName = 'x-sharer-filename';

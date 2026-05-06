@@ -6,11 +6,14 @@ import 'package:uuid/uuid.dart';
 
 import '../../domain/entities/device_identity.dart';
 import '../../domain/entities/file_payload.dart';
+import '../../domain/entities/paired_device.dart';
 import '../../domain/entities/peer.dart';
 import '../../domain/entities/transfer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
 import '../../domain/repositories/paired_devices_repository.dart';
+import '../../domain/repositories/peer_cache_repository.dart';
 import '../../domain/repositories/transfer_service.dart';
+import '../security/forget_service.dart';
 import 'http_file_client.dart';
 import 'http_file_server.dart';
 import 'incoming_event.dart';
@@ -26,6 +29,8 @@ class TransferServiceImpl implements TransferService {
   final HttpFileServer _server;
   final DeviceIdentityRepository _identityRepo;
   final PairedDevicesRepository _pairedRepo;
+  final PeerCacheRepository? _peerCache;
+  final ForgetService? _forget;
   final Uuid _uuid;
 
   /// Insertion-ordered map; iteration is most-recently-added first when
@@ -40,11 +45,15 @@ class TransferServiceImpl implements TransferService {
     required HttpFileServer server,
     required DeviceIdentityRepository identityRepo,
     required PairedDevicesRepository pairedRepo,
+    PeerCacheRepository? peerCache,
+    ForgetService? forget,
     Uuid? uuid,
   })  : _client = client,
         _server = server,
         _identityRepo = identityRepo,
         _pairedRepo = pairedRepo,
+        _peerCache = peerCache,
+        _forget = forget,
         _uuid = uuid ?? const Uuid() {
     _incomingSub = _server.events.listen(_onIncoming);
   }
@@ -90,8 +99,7 @@ class TransferServiceImpl implements TransferService {
       peer,
       file,
       identity,
-      paired?.psk,
-      paired?.certFingerprint,
+      paired,
     ));
     return transfer;
   }
@@ -101,13 +109,33 @@ class TransferServiceImpl implements TransferService {
     Peer peer,
     FilePayload file,
     DeviceIdentity sender,
-    Uint8List? recipientPsk,
-    String? recipientCertFingerprint,
+    PairedDevice? paired,
   ) async {
+    final recipientPsk = paired?.psk;
+    final recipientCertFingerprint = paired?.certFingerprint;
+    // Slice 5.4: prefer the IP we cached from any HMAC-verified inbound
+    // request (`/upload`, `/pair-finalize`, `/peer-forgot-you`). Bonsoir
+    // can hand us a stale or wrong-interface address (e.g. on Realme
+    // overwriting peer.host with the device's own IP — see
+    // reference_bonsoir_ip_flake.md). Fall back to peer.host when we
+    // have no cached address yet.
+    String host = peer.host!;
+    int port = peer.port!;
+    if (_peerCache != null) {
+      final cached = await _peerCache.getById(peer.id);
+      if (cached?.host != null && cached?.port != null) {
+        host = cached!.host!;
+        port = cached.port!;
+        if (host != peer.host) {
+          _log('id=${initial.id} prefer cached host=$host:$port over '
+              'mDNS=${peer.host}:${peer.port}');
+        }
+      }
+    }
     try {
       final result = await _client.upload(
-        host: peer.host!,
-        port: peer.port!,
+        host: host,
+        port: port,
         file: file,
         sender: sender,
         recipientPsk: recipientPsk,
@@ -133,6 +161,15 @@ class TransferServiceImpl implements TransferService {
       _log('Send done id=${initial.id} bytes=${result.bytesSent}');
     } catch (e, st) {
       developer.log('Send failed', error: e, stackTrace: st, name: _logName);
+      // Slice 5.4 reactive forget: a 401 from a peer that's in our
+      // PairedDevices store means they removed us. Drop the local
+      // entry and emit a forget event so the user gets a notification.
+      if (e is UploadStatusException &&
+          e.statusCode == 401 &&
+          paired != null &&
+          _forget != null) {
+        unawaited(_forget.recordReactive401(paired));
+      }
       final current = _byId[initial.id] ?? initial;
       _put(current.copyWith(
         status: TransferStatus.failed,

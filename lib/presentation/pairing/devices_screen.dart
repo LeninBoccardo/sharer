@@ -150,25 +150,18 @@ class _PairedList extends ConsumerWidget {
     WidgetRef ref,
     PairedDevice d,
   ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('Forget ${d.displayName}?'),
-        content: const Text(
-            'You will need to pair again to share files with this device.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Forget')),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      await ref.read(pairedDevicesRepoProvider).remove(d.deviceId);
-    }
+    // Slice 5.4: silent forget. The previous "Are you sure?" dialog is
+    // gone; tapping the trash icon immediately removes the local pair
+    // and best-effort notifies the peer so they reciprocally drop us.
+    // The peer's notification on their side is the only feedback they
+    // get — there is no UI on this side asking "should we tell them?".
+    final messenger = ScaffoldMessenger.of(context);
+    final forget = ref.read(forgetServiceProvider);
+    await forget.forgetPeer(d);
+    messenger.showSnackBar(SnackBar(
+      content: Text('Forgot ${d.displayName}'),
+      duration: const Duration(seconds: 3),
+    ));
   }
 
   static String _relativeTime(DateTime t) {

@@ -46,6 +46,48 @@ class PeerCacheStore implements PeerCacheRepository {
     await save(list);
   }
 
+  @override
+  Future<void> cacheAddress({
+    required String deviceId,
+    required String host,
+    required int port,
+    String? displayName,
+  }) async {
+    final list = (await load()).toList();
+    final i = list.indexWhere((p) => p.id == deviceId);
+    final now = DateTime.now();
+    if (i >= 0) {
+      list[i] = list[i].copyWith(
+        host: host,
+        port: port,
+        lastSeen: now,
+        // The display name on a Peer is mainly UI cosmetic; only
+        // overwrite it when the caller actually has one. Keeps cached
+        // names from being clobbered by signatures that omit them.
+        name: displayName ?? list[i].name,
+      );
+    } else {
+      list.add(Peer(
+        id: deviceId,
+        name: displayName ?? deviceId,
+        host: host,
+        port: port,
+        isPaired: true,
+        lastSeen: now,
+      ));
+    }
+    await save(list);
+  }
+
+  @override
+  Future<Peer?> getById(String deviceId) async {
+    final list = await load();
+    for (final p in list) {
+      if (p.id == deviceId) return p;
+    }
+    return null;
+  }
+
   static Map<String, dynamic> _toJson(Peer p) => {
         'id': p.id,
         'name': p.name,

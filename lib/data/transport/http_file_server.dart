@@ -10,9 +10,12 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../domain/entities/paired_device.dart';
+import '../../domain/repositories/peer_cache_repository.dart';
+import '../security/forget_service.dart';
 import '../security/hmac_verifier.dart';
 import '../security/pair_invite_service.dart';
 import '../security/pairing_service.dart';
+import '../security/peer_forget_signer.dart';
 import '../security/tls_key_material.dart';
 import '../security/transfer_cipher.dart';
 import '../storage/downloads_locator.dart';
@@ -47,6 +50,14 @@ class HttpFileServer {
   final PairingService? _pairing;
   final PairInviteService? _invite;
 
+  /// Slice 5.4: optional. When wired, every HMAC-verified inbound
+  /// request caches the sender's source IP so subsequent outbound
+  /// transfers prefer it over bonsoir's resolved peer.host. Also
+  /// activates the `/peer-forgot-you` route (shares the same
+  /// PairedDevices repo for HMAC validation).
+  final PeerCacheRepository? _peerCache;
+  final ForgetService? _forget;
+
   /// Slice 5.1 TLS material. When non-null the server binds with HTTPS;
   /// when null (test convenience) it falls back to plain HTTP. Production
   /// providers always wire a real [TlsKeyMaterial]. Held as a Future so
@@ -74,6 +85,8 @@ class HttpFileServer {
     HmacVerifier? verifier,
     PairingService? pairing,
     PairInviteService? invite,
+    PeerCacheRepository? peerCache,
+    ForgetService? forget,
     Future<TlsKeyMaterial>? tlsMaterial,
     int port = TransportProtocol.defaultPort,
     Uuid? uuid,
@@ -82,6 +95,8 @@ class HttpFileServer {
         _verifier = verifier,
         _pairing = pairing,
         _invite = invite,
+        _peerCache = peerCache,
+        _forget = forget,
         _tlsFuture = tlsMaterial,
         _port = port,
         _uuid = uuid ?? const Uuid();
@@ -139,6 +154,14 @@ class HttpFileServer {
     if (_invite != null) {
       router.post(TransportProtocol.pairInvitePath, _handlePairInvite);
       router.post(TransportProtocol.pairFinalizePath, _handlePairFinalize);
+    }
+    // Slice 5.4: peer-forgot-you. Always registered when a forget
+    // service is wired — like /upload it doesn't gate on network trust
+    // because a paired peer must be able to reach us anywhere to tell
+    // us they're done. The handler itself enforces HMAC against the
+    // PairedDevice store.
+    if (_forget != null && _verifier != null) {
+      router.post(TransportProtocol.peerForgotYouPath, _handlePeerForgotYou);
     }
     final handler = const Pipeline().addHandler(router.call);
     try {
@@ -233,6 +256,17 @@ class HttpFileServer {
           await request.read().drain<void>();
           return Response.unauthorized('');
       }
+    }
+
+    // Slice 5.4: an HMAC-verified inbound proves the sender's source IP
+    // can reach us. Cache it so future outbound transfers prefer this
+    // address over bonsoir-resolved peer.host (which on Realme has been
+    // observed overwriting itself with the local device's own IP).
+    if (authenticatedDevice != null) {
+      await _cacheSourceAddress(
+        request: request,
+        device: authenticatedDevice,
+      );
     }
 
     // Slice 5.3: when the request was authenticated AND a transferId
@@ -452,6 +486,19 @@ class HttpFileServer {
     );
     switch (result) {
       case PairFinalizeRecorded():
+        // Slice 5.4: HMAC-verified pair-finalize is just as solid a
+        // proof of "this peer reaches us at this IP" as /upload. Cache
+        // the source address under their deviceId.
+        if (_peerCache != null) {
+          final host = _readRemoteHost(request);
+          if (host != null) {
+            await _peerCache.cacheAddress(
+              deviceId: senderId,
+              host: host,
+              port: TransportProtocol.defaultPort,
+            );
+          }
+        }
         return Response.ok('');
       case PairFinalizeUnknown():
         return Response.notFound('');
@@ -523,6 +570,87 @@ class HttpFileServer {
     return Response.ok(
       jsonEncode({'pairedAs': paired.deviceId}),
       headers: {'content-type': 'application/json'},
+    );
+  }
+
+  /// Slice 5.4: handles `/peer-forgot-you`. The body shape is
+  /// `{senderId, signature}` where signature is HMAC-SHA256 over the
+  /// canonical from `peer_forget_signer.dart` using the per-pair PSK.
+  ///
+  /// Result table:
+  ///   - sender unknown → 200 (idempotent: we already aren't paired)
+  ///   - HMAC mismatch  → 401 (don't leak which check failed)
+  ///   - HMAC ok        → 200 + remove the local PairedDevice + emit
+  ///                       a [ForgetEvent] so the UI can surface a toast
+  Future<Response> _handlePeerForgotYou(Request request) async {
+    final raw = await request.readAsString();
+    Map<String, dynamic> j;
+    try {
+      j = jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      _log('peer-forgot-you reject: malformed JSON');
+      return Response.badRequest();
+    }
+    String senderId;
+    String signatureBase64;
+    try {
+      senderId = j['senderId'] as String;
+      signatureBase64 = j['signature'] as String;
+    } catch (_) {
+      _log('peer-forgot-you reject: missing fields');
+      return Response.badRequest();
+    }
+    final verifier = _verifier!;
+    final paired = await verifier.repository.get(senderId);
+    if (paired == null) {
+      // Already not paired with this device; treat as a no-op success.
+      _log('peer-forgot-you no-op: $senderId not in paired store');
+      return Response.ok('');
+    }
+    final ok = verifyPeerForgotYouSignature(
+      psk: paired.psk,
+      senderId: senderId,
+      providedBase64: signatureBase64,
+    );
+    if (!ok) {
+      _log('peer-forgot-you reject: bad signature from $senderId');
+      return Response.unauthorized('');
+    }
+    // HMAC succeeded → cache the source IP just like /upload does, then
+    // hand off to ForgetService.
+    if (_peerCache != null) {
+      final host = _readRemoteHost(request);
+      if (host != null) {
+        await _peerCache.cacheAddress(
+          deviceId: paired.deviceId,
+          host: host,
+          port: TransportProtocol.defaultPort,
+          displayName: paired.displayName,
+        );
+      }
+    }
+    await _forget!.recordRemoteForgot(paired);
+    _log('peer-forgot-you accepted from ${paired.deviceId} '
+        '(${paired.displayName})');
+    return Response.ok('');
+  }
+
+  /// Caches the inbound request's source IP onto [device] in
+  /// [_peerCache]. No-op when the cache isn't wired or the connection
+  /// info isn't available (in-memory tests).
+  Future<void> _cacheSourceAddress({
+    required Request request,
+    required PairedDevice device,
+  }) async {
+    final cache = _peerCache;
+    if (cache == null) return;
+    final host = _readRemoteHost(request);
+    if (host == null) return;
+    await cache.cacheAddress(
+      deviceId: device.deviceId,
+      host: host,
+      port: TransportProtocol.defaultPort,
+      displayName: device.displayName,
     );
   }
 

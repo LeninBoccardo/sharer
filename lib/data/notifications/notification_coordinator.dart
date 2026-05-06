@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/transfer.dart';
+import '../security/forget_service.dart';
 import 'notification_service.dart';
 
 /// Slice 5.2.1: aggregates the transfer + pair-invite streams into
@@ -32,19 +33,23 @@ class NotificationCoordinator {
     required Stream<List<Transfer>> transfers,
     required Stream<PairInvite> invites,
     required Stream<bool> isTrusted,
+    Stream<ForgetEvent>? forgetEvents,
   })  : _service = service,
         _transfersStream = transfers,
         _invitesStream = invites,
-        _trustedStream = isTrusted;
+        _trustedStream = isTrusted,
+        _forgetStream = forgetEvents;
 
   final NotificationService _service;
   final Stream<List<Transfer>> _transfersStream;
   final Stream<PairInvite> _invitesStream;
   final Stream<bool> _trustedStream;
+  final Stream<ForgetEvent>? _forgetStream;
 
   StreamSubscription<List<Transfer>>? _transfersSub;
   StreamSubscription<PairInvite>? _invitesSub;
   StreamSubscription<bool>? _trustedSub;
+  StreamSubscription<ForgetEvent>? _forgetSub;
 
   /// Last-seen transfer state per id, so we can diff to detect
   /// transitions (started → completed, etc.). Pruned when a transfer
@@ -67,6 +72,7 @@ class NotificationCoordinator {
     _transfersSub = _transfersStream.listen(_onTransfers);
     _invitesSub = _invitesStream.listen(_onInvite);
     _trustedSub = _trustedStream.listen((value) => _trusted = value);
+    _forgetSub = _forgetStream?.listen(_onForget);
     _log('start');
   }
 
@@ -74,10 +80,24 @@ class NotificationCoordinator {
     await _transfersSub?.cancel();
     await _invitesSub?.cancel();
     await _trustedSub?.cancel();
+    await _forgetSub?.cancel();
     _transfersSub = null;
     _invitesSub = null;
     _trustedSub = null;
+    _forgetSub = null;
     _log('dispose');
+  }
+
+  /// Slice 5.4: a peer dropped this device's pair (proactively via
+  /// /peer-forgot-you, or inferred from a 401 reactive event). Either
+  /// way the local PairedDevice is already gone — surface a toast so
+  /// the user notices their device list shrank.
+  void _onForget(ForgetEvent event) {
+    unawaited(_service.showPeerUnpaired(
+      peerId: event.peerId,
+      peerName: event.peerName,
+      reactive: event.cause == ForgetCause.reactive,
+    ));
   }
 
   void _onTransfers(List<Transfer> snapshot) {

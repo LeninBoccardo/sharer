@@ -319,6 +319,36 @@ class NotificationService {
     );
   }
 
+  /// Slice 5.4: a peer dropped this device's pair from their side
+  /// (either via /peer-forgot-you or inferred from a 401). Shown as a
+  /// one-shot informational toast — same lane as transferDone so the
+  /// user knows their device list just changed without them touching it.
+  Future<void> showPeerUnpaired({
+    required String peerId,
+    required String peerName,
+    required bool reactive,
+  }) async {
+    final body = reactive
+        ? 'They removed Sharer on their side.'
+        : 'They unpaired this device.';
+    await _plugin.show(
+      id: NotificationIdSpace.peerUnpaired(peerId),
+      title: '$peerName unpaired',
+      body: body,
+      notificationDetails: const NotificationDetails(
+        android: AndroidNotificationDetails(
+          PeerUnpairedChannel.id,
+          PeerUnpairedChannel.name,
+          channelDescription: PeerUnpairedChannel.description,
+          importance: Importance.defaultImportance,
+          priority: Priority.defaultPriority,
+          category: AndroidNotificationCategory.status,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
+    );
+  }
+
   Future<void> cancelTransferActive(String transferId) =>
       _plugin.cancel(id: NotificationIdSpace.transferActive(transferId));
 
@@ -366,6 +396,12 @@ class NotificationService {
       PairInviteChannel.name,
       description: PairInviteChannel.description,
       importance: Importance.high,
+    ));
+    await android.createNotificationChannel(const AndroidNotificationChannel(
+      PeerUnpairedChannel.id,
+      PeerUnpairedChannel.name,
+      description: PeerUnpairedChannel.description,
+      importance: Importance.defaultImportance,
     ));
   }
 

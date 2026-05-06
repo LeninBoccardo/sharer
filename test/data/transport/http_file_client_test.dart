@@ -194,7 +194,8 @@ void main() {
         sender: stubIdentity(id: 'sender-id', name: 'Sender'),
         recipientPsk: wrongPsk,
       ),
-      throwsA(isA<HttpException>()),
+      throwsA(isA<UploadStatusException>()
+          .having((e) => e.statusCode, 'statusCode', 401)),
     );
   });
 
@@ -229,7 +230,8 @@ void main() {
         ),
         sender: stubIdentity(id: 'sender-id', name: 'Sender'),
       ),
-      throwsA(isA<HttpException>()),
+      throwsA(isA<UploadStatusException>()
+          .having((e) => e.statusCode, 'statusCode', 400)),
     );
   });
 }

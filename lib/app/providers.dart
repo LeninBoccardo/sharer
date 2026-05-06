@@ -16,6 +16,7 @@ import '../data/notifications/notification_coordinator.dart';
 import '../data/notifications/notification_router.dart';
 import '../data/notifications/notification_service.dart';
 import '../data/notifications/windows_tray_controller.dart';
+import '../data/security/forget_service.dart';
 import '../data/security/hmac_verifier.dart';
 import '../data/security/pair_invite_client.dart';
 import '../data/security/pair_invite_service.dart';
@@ -228,7 +229,24 @@ final inviteControllerProvider = Provider<InviteController>((ref) {
     client: ref.watch(pairInviteClientProvider),
     identityRepo: ref.watch(deviceIdentityRepoProvider),
     tlsStore: ref.watch(tlsKeyMaterialStoreProvider),
+    peerCache: ref.watch(peerCacheProvider),
   );
+});
+
+/// Slice 5.4: proactive + reactive forget coordinator. One instance per
+/// session — owns the peer-forgot-you POST client + the events stream
+/// the notification coordinator subscribes to. Reading this provider
+/// triggers nothing until [forgetPeer] / [recordRemoteForgot] /
+/// [recordReactive401] is called.
+final forgetServiceProvider = Provider<ForgetService>((ref) {
+  final svc = ForgetService(
+    pairedRepo: ref.watch(pairedDevicesRepoProvider),
+    peerCache: ref.watch(peerCacheProvider),
+    client: ref.watch(pairInviteClientProvider),
+    identityRepo: ref.watch(deviceIdentityRepoProvider),
+  );
+  ref.onDispose(svc.dispose);
+  return svc;
 });
 
 /// Production mDNS backend. Override with FakeMdnsBackend in tests so
@@ -276,6 +294,8 @@ final httpFileServerProvider = Provider<HttpFileServer>((ref) {
     verifier: ref.watch(hmacVerifierProvider),
     pairing: ref.watch(pairingServiceProvider),
     invite: ref.watch(pairInviteServiceProvider),
+    peerCache: ref.watch(peerCacheProvider),
+    forget: ref.watch(forgetServiceProvider),
     tlsMaterial: ref.watch(tlsKeyMaterialStoreProvider).get(),
   );
   ref.onDispose(server.dispose);
@@ -295,6 +315,8 @@ final transferServiceProvider = Provider<TransferService>((ref) {
     server: ref.watch(httpFileServerProvider),
     identityRepo: ref.watch(deviceIdentityRepoProvider),
     pairedRepo: ref.watch(pairedDevicesRepoProvider),
+    peerCache: ref.watch(peerCacheProvider),
+    forget: ref.watch(forgetServiceProvider),
   );
   ref.onDispose(svc.dispose);
   return svc;
@@ -322,6 +344,7 @@ final notificationCoordinatorProvider =
     transfers: ref.watch(transferServiceProvider).watchAll(),
     invites: ref.watch(pairInviteServiceProvider).invites,
     isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
+    forgetEvents: ref.watch(forgetServiceProvider).events,
   );
   ref.onDispose(coord.dispose);
   coord.start();

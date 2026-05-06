@@ -10,6 +10,7 @@ import '../../data/transport/transport_protocol.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
+import '../../domain/repositories/peer_cache_repository.dart';
 
 /// Outcome of [InviteController.invite]. Drives the UI between
 /// "couldn't reach peer" (snackbar) and "show fingerprint modal".
@@ -37,15 +38,24 @@ class InviteController {
     required PairInviteClient client,
     required DeviceIdentityRepository identityRepo,
     required TlsKeyMaterialStore tlsStore,
+    PeerCacheRepository? peerCache,
   })  : _service = service,
         _client = client,
         _identityRepo = identityRepo,
-        _tlsStore = tlsStore;
+        _tlsStore = tlsStore,
+        _peerCache = peerCache;
 
   final PairInviteService _service;
   final PairInviteClient _client;
   final DeviceIdentityRepository _identityRepo;
   final TlsKeyMaterialStore _tlsStore;
+
+  /// Slice 5.4: when wired, the initiator caches the responder's
+  /// host:port the moment the /pair-invite POST succeeds. The responder
+  /// already had us captured by the server-side handler at that point;
+  /// this closes the symmetric gap. Optional so test-only code paths
+  /// don't have to construct one.
+  final PeerCacheRepository? _peerCache;
 
   /// Initiator entry point. Runs the full create→POST→complete pipeline
   /// and returns once the fingerprint is ready (or we failed).
@@ -73,6 +83,21 @@ class InviteController {
     );
     switch (post) {
       case PairInvitePostOk(:final response):
+        // Slice 5.4: the host we just used to reach the responder is
+        // known to route. Snapshot it under the responder's deviceId so
+        // future hot-path uploads + the reciprocal `/pair-finalize`
+        // POST can target the same address even if bonsoir starts
+        // resolving the responder's mDNS name to something stale.
+        if (_peerCache != null) {
+          await _peerCache.cacheAddress(
+            deviceId: response.responderId,
+            host: peer.host!,
+            port: peer.port!,
+            displayName: response.responderName.isEmpty
+                ? peer.name
+                : response.responderName,
+          );
+        }
         final completed = await _service.completeInvite(
           inviteId: payload.inviteId,
           responderId: response.responderId,

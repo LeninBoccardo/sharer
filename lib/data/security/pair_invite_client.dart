@@ -221,6 +221,56 @@ class PairInviteClient {
     }
   }
 
+  /// Slice 5.4: POST /peer-forgot-you. Best-effort: success and failure
+  /// produce the same local outcome (the peer is removed regardless), so
+  /// returning bool here is just for logging/instrumentation. The body
+  /// shape is `{senderId, signature}` matching
+  /// `peer_forget_signer.dart`'s canonical.
+  ///
+  /// Pinning: we already hold the peer's cert fingerprint on the
+  /// PairedDevice we're about to forget — same pinning logic as
+  /// /pair-finalize.
+  Future<bool> postPeerForgotYou({
+    required String host,
+    required int port,
+    required String senderId,
+    required String signatureBase64,
+    required String peerCertFingerprintSha256,
+    Duration timeout = _defaultTimeout,
+  }) async {
+    final body = jsonEncode({
+      'senderId': senderId,
+      'signature': signatureBase64,
+    });
+    final useTls = _overrideHttpClient == null;
+    final scheme = useTls ? 'https' : 'http';
+    final uri = Uri.parse('$scheme://$host:$port'
+        '${TransportProtocol.peerForgotYouPath}');
+    _log('POST $uri senderId=$senderId');
+    final http = _overrideHttpClient ??
+        buildPinningHttpClient(
+            expectedFingerprint: peerCertFingerprintSha256);
+    final ownsClient = _overrideHttpClient == null;
+    try {
+      final req = await http.postUrl(uri).timeout(timeout);
+      final encoded = utf8.encode(body);
+      req.headers.contentLength = encoded.length;
+      req.headers.contentType = ContentType.json;
+      req.add(encoded);
+      final resp = await req.close().timeout(timeout);
+      await resp.drain<void>();
+      _log('peer-forgot-you response ${resp.statusCode} for $senderId');
+      return resp.statusCode == HttpStatus.ok;
+    } catch (e, st) {
+      developer.log('peer-forgot-you POST failed',
+          error: e, stackTrace: st, name: _logName);
+      _log('peer-forgot-you network error to $host:$port: $e');
+      return false;
+    } finally {
+      if (ownsClient) http.close(force: true);
+    }
+  }
+
   void close() {
     _overrideHttpClient?.close(force: true);
   }

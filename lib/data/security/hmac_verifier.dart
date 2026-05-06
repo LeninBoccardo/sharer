@@ -59,6 +59,12 @@ class HmacVerifier {
         _nonceTtl = nonceTtl ?? const Duration(seconds: 60),
         _now = now ?? DateTime.now;
 
+  /// Slice 5.4: the `/peer-forgot-you` handler reuses the same paired
+  /// store to look up the sender's PSK. Exposing the repo here keeps
+  /// the server from having to take a second injection of the same
+  /// store.
+  PairedDevicesRepository get repository => _paired;
+
   Future<HmacVerifyResult> verify({
     required String method,
     required String path,
