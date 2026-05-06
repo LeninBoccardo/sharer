@@ -11,6 +11,9 @@
 .svn/
 .swiftpm/
 migrate_working_dir/
+# Stray screenshots Flutter / IDE leave at the repo root (e.g.
+# `flutter screenshot` output, IDE debug captures).
+/flutter_*.png
 
 # IntelliJ related
 *.iml
