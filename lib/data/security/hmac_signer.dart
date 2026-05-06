@@ -44,6 +44,7 @@ class HmacSigner {
     required String senderDeviceId,
     required String filename,
     required int filesize,
+    String? transferId,
   }) {
     final timestampMs = _now().toUtc().millisecondsSinceEpoch;
     final nonce = _generateNonce();
@@ -55,6 +56,7 @@ class HmacSigner {
       senderDeviceId: senderDeviceId,
       filename: filename,
       filesize: filesize,
+      transferId: transferId,
     );
     final mac = Hmac(sha256, psk).convert(utf8.encode(canonical));
     return SignedRequestHeaders(
@@ -75,6 +77,12 @@ class HmacSigner {
 
 /// Canonical input to HMAC-SHA256. Newline-delimited fields. Filename is
 /// hashed so the field is fixed length and can't sneak in a delimiter.
+///
+/// [transferId] (slice 5.3) appends an 8th field when non-null. Older
+/// pre-5.3 signed requests omit it entirely so the canonical string
+/// stays exactly 7 lines and existing pairs that haven't upgraded both
+/// sides can still verify each other. The receiver mirrors whichever
+/// shape the request has on the wire — see `HttpFileServer._handleUpload`.
 String canonicalString({
   required String method,
   required String path,
@@ -83,9 +91,10 @@ String canonicalString({
   required String senderDeviceId,
   required String filename,
   required int filesize,
+  String? transferId,
 }) {
   final filenameHash = sha256.convert(utf8.encode(filename)).toString();
-  return [
+  final fields = [
     method.toUpperCase(),
     path,
     timestampMs.toString(),
@@ -93,5 +102,7 @@ String canonicalString({
     senderDeviceId,
     filenameHash,
     filesize.toString(),
-  ].join('\n');
+  ];
+  if (transferId != null) fields.add(transferId);
+  return fields.join('\n');
 }

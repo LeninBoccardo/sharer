@@ -91,4 +91,13 @@ abstract final class TransportProtocol {
   /// `initiatorCertFingerprintSha256` field that travels in the QR
   /// offer.
   static const String headerCertFingerprint = 'x-sharer-cert-fingerprint';
+
+  /// Slice 5.3: per-transfer 8-byte random id, base64. Used as the HKDF
+  /// salt that derives the transferKey from the per-pair PSK, and as
+  /// the high 8 bytes of every per-chunk AES-GCM nonce. Travels on
+  /// signed `/upload` requests; covered by the HMAC canonical string so
+  /// it can't be substituted in flight. Absence on a signed upload
+  /// signals an unencrypted body (kept only as a test-convenience path
+  /// for plain-HTTP servers).
+  static const String headerTransferId = 'x-sharer-transferid';
 }

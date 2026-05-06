@@ -9,10 +9,12 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../domain/entities/paired_device.dart';
 import '../security/hmac_verifier.dart';
 import '../security/pair_invite_service.dart';
 import '../security/pairing_service.dart';
 import '../security/tls_key_material.dart';
+import '../security/transfer_cipher.dart';
 import '../storage/downloads_locator.dart';
 import 'incoming_event.dart';
 import 'transport_protocol.dart';
@@ -186,6 +188,7 @@ class HttpFileServer {
     final senderId = headers[TransportProtocol.headerDeviceId] ?? 'unknown';
     final senderName = _decodeHeader(headers[TransportProtocol.headerDeviceName]) ??
         'Unknown device';
+    final transferIdB64 = headers[TransportProtocol.headerTransferId];
 
     if (fileName == null || fileName.isEmpty) {
       return Response.badRequest(
@@ -205,6 +208,7 @@ class HttpFileServer {
     // `verifier: null`, the gate is disabled. Production providers
     // always wire a real verifier.
     final verifier = _verifier;
+    PairedDevice? authenticatedDevice;
     if (verifier != null) {
       final outcome = await verifier.verify(
         method: 'POST',
@@ -215,10 +219,11 @@ class HttpFileServer {
         signature: headers[TransportProtocol.headerSignature],
         filename: fileName,
         filesize: totalBytes,
+        transferId: transferIdB64,
       );
       switch (outcome) {
-        case HmacAuthenticated():
-          break;
+        case HmacAuthenticated(:final device):
+          authenticatedDevice = device;
         case HmacUnsigned():
           _log('Reject upload from $senderId ($senderName): unsigned');
           await request.read().drain<void>();
@@ -230,12 +235,45 @@ class HttpFileServer {
       }
     }
 
+    // Slice 5.3: when the request was authenticated AND a transferId
+    // is present, the body is encrypted. Derive the per-transfer key
+    // and pipe the inbound stream through the chunk decryptor.
+    //
+    // Production: the client always sends the transferId on a signed
+    // upload, so this path is taken every time. Tests that exercise
+    // the unsigned/null-verifier convenience path keep the plaintext
+    // shape.
+    TransferCipher? cipher;
+    if (authenticatedDevice != null && transferIdB64 != null) {
+      try {
+        final transferIdBytes =
+            Uint8List.fromList(base64Decode(transferIdB64));
+        cipher = await TransferCipher.derive(
+          psk: authenticatedDevice.psk,
+          transferId: transferIdBytes,
+        );
+      } catch (e) {
+        _log('Reject upload from $senderId ($senderName): '
+            'malformed transferId: $e');
+        await request.read().drain<void>();
+        return Response.unauthorized('');
+      }
+    } else if (authenticatedDevice != null && transferIdB64 == null) {
+      // Authenticated but no transferId — a signed-but-unencrypted
+      // request. Slice 5.3 makes encryption mandatory between paired
+      // peers, so reject. Same 401 to avoid leaking which check failed.
+      _log('Reject upload from $senderId ($senderName): missing transferId');
+      await request.read().drain<void>();
+      return Response.unauthorized('');
+    }
+
     final id = _uuid.v4();
     final dir = await _downloads.directory();
     final safeName = _sanitizeFileName(fileName);
     final destFile = await _resolveUniqueDestination(dir, safeName);
 
-    _log('Receive start id=$id from $senderName ($senderId) → ${destFile.path}');
+    _log('Receive start id=$id from $senderName ($senderId) → ${destFile.path}'
+        ' encrypted=${cipher != null}');
     _events.add(IncomingStarted(
       id: id,
       fileName: destFile.uri.pathSegments.last,
@@ -248,7 +286,10 @@ class HttpFileServer {
     var bytesReceived = 0;
     var lastEmittedBytes = 0;
     try {
-      await for (final chunk in request.read()) {
+      final body = cipher == null
+          ? request.read()
+          : cipher.decrypt(request.read());
+      await for (final chunk in body) {
         sink.add(chunk);
         bytesReceived += chunk.length;
         if (bytesReceived - lastEmittedBytes >= _progressThresholdBytes) {

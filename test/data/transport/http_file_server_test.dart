@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sharer/data/security/hmac_signer.dart';
 import 'package:sharer/data/security/hmac_verifier.dart';
 import 'package:sharer/data/security/paired_devices_store.dart';
+import 'package:sharer/data/security/transfer_cipher.dart';
 import 'package:sharer/data/transport/http_file_server.dart';
 import 'package:sharer/data/transport/incoming_event.dart';
 import 'package:sharer/data/transport/transport_protocol.dart';
@@ -75,28 +77,89 @@ Future<_SignedFixture> _setupSigned({int seed = 7}) async {
   );
 }
 
-SignedRequestHeaders _signFor({
-  required _SignedFixture f,
+/// Sign + (optionally) encrypt + post a paired upload through a raw
+/// [HttpClient]. Production goes through [HttpFileClient]; this helper
+/// exists so server-side tests can exercise the wire shape directly.
+///
+/// - [signWithPsk] is the PSK used for the HMAC signature header.
+/// - [encryptWithPsk] is the PSK used to derive the transferKey. When
+///   null the body goes plaintext on the wire — useful for rejection
+///   tests where the server is expected to 401 before reading the body.
+/// - The transferId is always included (per slice 5.3 the server
+///   requires it on signed requests; plaintext-but-signed bodies that
+///   the rejection tests use never reach the decrypt step).
+Future<HttpClientResponse> _postSignedUpload({
+  required int port,
+  required HmacSigner signer,
+  required Uint8List signWithPsk,
+  required Uint8List? encryptWithPsk,
+  required String senderId,
+  required String senderName,
   required String fileName,
-  required int filesize,
-}) {
-  return f.signer.sign(
-    psk: f.peer.psk,
+  required List<int> body,
+}) async {
+  final transferId = newTransferId(Random(31));
+  final transferIdB64 = base64Encode(transferId);
+
+  List<int> wireBody;
+  if (encryptWithPsk != null) {
+    final cipher = await TransferCipher.derive(
+      psk: encryptWithPsk,
+      transferId: transferId,
+    );
+    final acc = <int>[];
+    await for (final part in cipher.encrypt(Stream.value(body))) {
+      acc.addAll(part);
+    }
+    wireBody = acc;
+  } else {
+    wireBody = body;
+  }
+
+  final signed = signer.sign(
+    psk: signWithPsk,
     method: 'POST',
     path: TransportProtocol.uploadPath,
-    senderDeviceId: f.peer.deviceId,
+    senderDeviceId: senderId,
     filename: fileName,
-    filesize: filesize,
+    filesize: body.length,
+    transferId: transferIdB64,
   );
+  final client = HttpClient();
+  try {
+    final req = await client.postUrl(
+      Uri.parse('http://127.0.0.1:$port${TransportProtocol.uploadPath}'),
+    );
+    req.headers.contentLength = wireBody.length;
+    req.headers.set(
+      TransportProtocol.headerFileName,
+      Uri.encodeComponent(fileName),
+    );
+    req.headers.set(TransportProtocol.headerFileSize, body.length.toString());
+    req.headers.set(TransportProtocol.headerDeviceId, senderId);
+    req.headers.set(
+      TransportProtocol.headerDeviceName,
+      Uri.encodeComponent(senderName),
+    );
+    req.headers.set(TransportProtocol.headerTransferId, transferIdB64);
+    req.headers.set(TransportProtocol.headerTimestamp, signed.timestamp);
+    req.headers.set(TransportProtocol.headerNonce, signed.nonce);
+    req.headers.set(TransportProtocol.headerSignature, signed.signature);
+    req.add(wireBody);
+    return await req.close();
+  } finally {
+    client.close();
+  }
 }
 
-Future<HttpClientResponse> _postUpload({
+/// Sends a plaintext, no-signature-headers POST. Used by the test that
+/// confirms the server rejects unsigned uploads (slice 4.4 policy).
+Future<HttpClientResponse> _postPlainUnsignedUpload({
   required int port,
   required String fileName,
   required List<int> body,
   String senderId = 'sender-1',
   String senderName = 'Sender',
-  SignedRequestHeaders? signed,
 }) async {
   final client = HttpClient();
   try {
@@ -114,11 +177,6 @@ Future<HttpClientResponse> _postUpload({
       TransportProtocol.headerDeviceName,
       Uri.encodeComponent(senderName),
     );
-    if (signed != null) {
-      req.headers.set(TransportProtocol.headerTimestamp, signed.timestamp);
-      req.headers.set(TransportProtocol.headerNonce, signed.nonce);
-      req.headers.set(TransportProtocol.headerSignature, signed.signature);
-    }
     req.add(body);
     return await req.close();
   } finally {
@@ -221,13 +279,15 @@ void main() {
 
       const payload = 'hello sharer world';
       final body = utf8.encode(payload);
-      final response = await _postUpload(
+      final response = await _postSignedUpload(
         port: f.server.boundPort!,
-        fileName: 'greeting.txt',
-        body: body,
+        signer: f.signer,
+        signWithPsk: f.peer.psk,
+        encryptWithPsk: f.peer.psk,
         senderId: f.peer.deviceId,
         senderName: f.peer.displayName,
-        signed: _signFor(f: f, fileName: 'greeting.txt', filesize: body.length),
+        fileName: 'greeting.txt',
+        body: body,
       );
 
       expect(response.statusCode, HttpStatus.ok);
@@ -295,23 +355,26 @@ void main() {
       final port = f.server.boundPort!;
       final firstBody = utf8.encode('first');
       final secondBody = utf8.encode('second');
-      await (await _postUpload(
+      await (await _postSignedUpload(
         port: port,
+        signer: f.signer,
+        signWithPsk: f.peer.psk,
+        encryptWithPsk: f.peer.psk,
+        senderId: f.peer.deviceId,
+        senderName: f.peer.displayName,
         fileName: 'foo.txt',
         body: firstBody,
-        senderId: f.peer.deviceId,
-        senderName: f.peer.displayName,
-        signed: _signFor(f: f, fileName: 'foo.txt', filesize: firstBody.length),
       ))
           .drain<void>();
-      await (await _postUpload(
+      await (await _postSignedUpload(
         port: port,
-        fileName: 'foo.txt',
-        body: secondBody,
+        signer: f.signer,
+        signWithPsk: f.peer.psk,
+        encryptWithPsk: f.peer.psk,
         senderId: f.peer.deviceId,
         senderName: f.peer.displayName,
-        signed:
-            _signFor(f: f, fileName: 'foo.txt', filesize: secondBody.length),
+        fileName: 'foo.txt',
+        body: secondBody,
       ))
           .drain<void>();
       await _settle();
@@ -338,14 +401,15 @@ void main() {
       await _settle();
 
       final body = utf8.encode('nope');
-      final response = await _postUpload(
+      final response = await _postSignedUpload(
         port: f.server.boundPort!,
-        fileName: '../../etc/passwd',
-        body: body,
+        signer: f.signer,
+        signWithPsk: f.peer.psk,
+        encryptWithPsk: f.peer.psk,
         senderId: f.peer.deviceId,
         senderName: f.peer.displayName,
-        signed:
-            _signFor(f: f, fileName: '../../etc/passwd', filesize: body.length),
+        fileName: '../../etc/passwd',
+        body: body,
       );
       expect(response.statusCode, HttpStatus.ok);
       await response.drain<void>();
@@ -395,28 +459,24 @@ void main() {
       await _settle();
 
       final body = utf8.encode('signed-hello');
-      final headers = signer.sign(
-        psk: peer.psk,
-        method: 'POST',
-        path: TransportProtocol.uploadPath,
-        senderDeviceId: peer.deviceId,
-        filename: 'note.txt',
-        filesize: body.length,
-      );
-      final response = await _postUpload(
+      final response = await _postSignedUpload(
         port: s.server.boundPort!,
-        fileName: 'note.txt',
-        body: body,
+        signer: signer,
+        signWithPsk: peer.psk,
+        encryptWithPsk: peer.psk,
         senderId: peer.deviceId,
         senderName: peer.displayName,
-        signed: headers,
+        fileName: 'note.txt',
+        body: body,
       );
       expect(response.statusCode, HttpStatus.ok);
       await response.drain<void>();
     });
 
     test('rejects with 401 when signed by a non-paired sender', () async {
-      // Verifier knows nobody.
+      // Verifier knows nobody — request is rejected at the HMAC gate
+      // before the body is read, so the body shape (plaintext or not)
+      // doesn't matter.
       final s = _setup(verifier: verifier);
       addTearDown(() async {
         await s.server.dispose();
@@ -428,20 +488,15 @@ void main() {
       await _settle();
 
       final body = utf8.encode('attempt');
-      final headers = signer.sign(
-        psk: _psk(99),
-        method: 'POST',
-        path: TransportProtocol.uploadPath,
-        senderDeviceId: 'stranger',
-        filename: 'note.txt',
-        filesize: body.length,
-      );
-      final response = await _postUpload(
+      final response = await _postSignedUpload(
         port: s.server.boundPort!,
+        signer: signer,
+        signWithPsk: _psk(99),
+        encryptWithPsk: null,
+        senderId: 'stranger',
+        senderName: 'Stranger',
         fileName: 'note.txt',
         body: body,
-        senderId: 'stranger',
-        signed: headers,
       );
       expect(response.statusCode, HttpStatus.unauthorized);
       await response.drain<void>();
@@ -468,20 +523,15 @@ void main() {
       await _settle();
 
       final body = utf8.encode('attempt');
-      final headers = signer.sign(
-        psk: _psk(99), // wrong PSK
-        method: 'POST',
-        path: TransportProtocol.uploadPath,
-        senderDeviceId: peer.deviceId,
-        filename: 'note.txt',
-        filesize: body.length,
-      );
-      final response = await _postUpload(
+      final response = await _postSignedUpload(
         port: s.server.boundPort!,
+        signer: signer,
+        signWithPsk: _psk(99), // wrong PSK — HMAC check rejects
+        encryptWithPsk: null,
+        senderId: peer.deviceId,
+        senderName: peer.displayName,
         fileName: 'note.txt',
         body: body,
-        senderId: peer.deviceId,
-        signed: headers,
       );
       expect(response.statusCode, HttpStatus.unauthorized);
       await response.drain<void>();
@@ -501,7 +551,7 @@ void main() {
       s.trust.add(true);
       await _settle();
 
-      final response = await _postUpload(
+      final response = await _postPlainUnsignedUpload(
         port: s.server.boundPort!,
         fileName: 'unsigned.txt',
         body: utf8.encode('should be rejected'),

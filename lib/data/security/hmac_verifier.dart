@@ -68,6 +68,7 @@ class HmacVerifier {
     required String? signature,
     required String filename,
     required int filesize,
+    String? transferId,
   }) async {
     final hasAny = _present(timestamp) || _present(nonce) || _present(signature);
     if (!hasAny) return const HmacUnsigned();
@@ -103,6 +104,7 @@ class HmacVerifier {
       senderDeviceId: senderDeviceId,
       filename: filename,
       filesize: filesize,
+      transferId: transferId,
     );
     final expected = Hmac(sha256, device.psk).convert(utf8.encode(canonical));
     final provided = _safeBase64Decode(signature!);

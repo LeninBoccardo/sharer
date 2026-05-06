@@ -9,6 +9,7 @@ import '../../domain/entities/device_identity.dart';
 import '../../domain/entities/file_payload.dart';
 import '../security/hmac_signer.dart';
 import '../security/pinning_http_client.dart';
+import '../security/transfer_cipher.dart';
 import 'transport_protocol.dart';
 
 /// Result of a successful upload — what the receiver wrote.
@@ -62,9 +63,24 @@ class HttpFileClient {
     final scheme = useTls ? 'https' : 'http';
     final uri =
         Uri.parse('$scheme://$host:$port${TransportProtocol.uploadPath}');
+
+    // Slice 5.3: when we have a PSK to sign with, we also encrypt every
+    // chunk end-to-end. Unsigned uploads (test convenience only) stay
+    // plaintext — production servers reject those at the HMAC gate
+    // anyway, so the unencrypted code path never runs against a real
+    // peer.
+    final transferIdBytes =
+        recipientPsk != null ? newTransferId() : null;
+    final transferIdB64 =
+        transferIdBytes != null ? base64Encode(transferIdBytes) : null;
+    final encrypt = recipientPsk != null;
+    final wireSize = encrypt
+        ? encryptedLengthFor(file.sizeBytes)
+        : file.sizeBytes;
     _log('POST $uri  file=${file.fileName} size=${file.sizeBytes}'
         ' signed=${recipientPsk != null}'
-        ' pinned=${recipientCertFingerprint != null}');
+        ' pinned=${recipientCertFingerprint != null}'
+        ' encrypted=$encrypt wireSize=$wireSize');
 
     final http = _overrideHttpClient ??
         buildPinningHttpClient(expectedFingerprint: recipientCertFingerprint);
@@ -75,7 +91,7 @@ class HttpFileClient {
       request.headers.contentType = ContentType.parse(
         file.mimeType ?? 'application/octet-stream',
       );
-      request.headers.contentLength = file.sizeBytes;
+      request.headers.contentLength = wireSize;
       request.headers.set(
         TransportProtocol.headerFileName,
         Uri.encodeComponent(file.fileName),
@@ -89,6 +105,10 @@ class HttpFileClient {
         TransportProtocol.headerDeviceName,
         Uri.encodeComponent(sender.name),
       );
+      if (transferIdB64 != null) {
+        request.headers
+            .set(TransportProtocol.headerTransferId, transferIdB64);
+      }
 
       if (recipientPsk != null) {
         final signed = _signer.sign(
@@ -98,6 +118,7 @@ class HttpFileClient {
           senderDeviceId: sender.id,
           filename: file.fileName,
           filesize: file.sizeBytes,
+          transferId: transferIdB64,
         );
         request.headers
             .set(TransportProtocol.headerTimestamp, signed.timestamp);
@@ -106,6 +127,8 @@ class HttpFileClient {
             .set(TransportProtocol.headerSignature, signed.signature);
       }
 
+      // Track plaintext bytes for progress so the UI shows file-relative
+      // progress, not wire bytes — encrypted overhead would be confusing.
       var bytesSent = 0;
       final tracked = file.bytes.map((chunk) {
         bytesSent += chunk.length;
@@ -113,7 +136,16 @@ class HttpFileClient {
         return chunk;
       });
 
-      await request.addStream(tracked);
+      Stream<List<int>> wireStream = tracked;
+      if (encrypt) {
+        final cipher = await TransferCipher.derive(
+          psk: recipientPsk,
+          transferId: transferIdBytes!,
+        );
+        wireStream = cipher.encrypt(tracked);
+      }
+
+      await request.addStream(wireStream);
       final response = await request.close();
       final body = await response.transform(utf8.decoder).join();
 
