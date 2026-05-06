@@ -10,6 +10,15 @@ import 'package:window_manager/window_manager.dart';
 import 'app/app.dart';
 import 'app/providers.dart';
 
+// Slice 5.3.2: cryptography_flutter is wired in pubspec.yaml — its
+// plugin registration runs automatically on Flutter engine startup,
+// swapping AesGcm.with256bits() over to a platform-native impl
+// (javax.crypto.Cipher / CommonCrypto / BCrypt). The pure-Dart AES
+// fallback that capped slice 5.3 throughput at ~5–10 MB/s on a 100 MB
+// file is no longer in the hot path. No explicit init call needed —
+// FlutterCryptography.enable() was deprecated in favour of automatic
+// plugin registration.
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();

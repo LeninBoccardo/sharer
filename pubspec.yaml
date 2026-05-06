@@ -62,9 +62,16 @@ dependencies:
 
   # Ed25519 long-term identity (slice 4.5), X25519 + HKDF for the LAN
   # pair-invite handshake (slice 4.6), AES-256-GCM for end-to-end chunk
-  # encryption (slice 5.3). Pure-Dart implementation; cryptography_flutter
-  # for hardware acceleration is a future polish if profiling shows it.
+  # encryption (slice 5.3). Pure-Dart implementation gates the hot
+  # path under cryptography_flutter at boot — see slice 5.3.2 + main.dart.
   cryptography: ^2.7.0
+  # Slice 5.3.2: native AES-GCM (javax.crypto.Cipher on Android,
+  # CommonCrypto on Apple, BCrypt on Windows). Registered at boot via
+  # FlutterCryptography.enable(); the same AesGcm.with256bits() factory
+  # in transfer_cipher.dart now hits a native implementation. Fixes the
+  # 100MB-takes-forever issue caught in slice 5.x validation — pure-
+  # Dart AES is ~5–10 MB/s, native is 100+ MB/s.
+  cryptography_flutter: ^2.3.2
 
   # Self-signed X.509 cert generation for slice 5.1 TLS + cert pinning.
   # Wraps pointycastle's ASN.1 + key-gen primitives — much less code than
