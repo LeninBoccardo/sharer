@@ -226,6 +226,70 @@ void main() {
       expect(openedPaths, isEmpty);
       expect(showWindowCount, 0);
     });
+
+    test('Slice 5.2.4.1: peer-unpaired body tap brings the window forward '
+        '(payload=peer_unpaired:<id>, actionId=null on Android)', () async {
+      service.emit(const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        payload: 'peer_unpaired:realme',
+      ));
+      await pumpEventQueue();
+      expect(showWindowCount, 1);
+      expect(openedPaths, isEmpty);
+    });
+
+    test('Slice 5.2.4.1: peer-unpaired body tap on Windows '
+        '(actionId mirrors payload) also brings the window forward',
+        () async {
+      service.emit(const NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: 'peer_unpaired:realme',
+        payload: 'peer_unpaired:realme',
+      ));
+      await pumpEventQueue();
+      expect(showWindowCount, 1);
+    });
+
+    test('Slice 5.2.4.1: any body tap with an unknown payload still '
+        'brings the window forward (default fall-through)', () async {
+      service.emit(const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        payload: 'something_we_havent_invented_yet:42',
+      ));
+      await pumpEventQueue();
+      expect(showWindowCount, 1);
+    });
+
+    test('Slice 5.2.4.1: a body tap with no payload at all still brings '
+        'the window forward', () async {
+      service.emit(const NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+      ));
+      await pumpEventQueue();
+      expect(showWindowCount, 1);
+    });
+
+    test('Slice 5.2.4.1: an unknown action button (not a body tap) is '
+        'still a no-op', () async {
+      // The default-to-show-window fall-through must NOT fire for
+      // genuine action-button taps we don't recognise — only for body
+      // taps. This preserves the spec that buttons do specific things
+      // (or nothing).
+      service.emit(const NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: 'truly_unknown_action_button',
+        payload: 'pair_invite:i1',
+      ));
+      await pumpEventQueue();
+      // Note: payload starts with `pair_invite:` which would normally
+      // route to invite-view, but actionId is also non-null and
+      // doesn't match the invite-view pattern → we should respect the
+      // actionId namespace and stay quiet.
+      expect(openedPaths, isEmpty);
+      expect(showWindowCount, 0);
+    });
   });
 
   group('cold-start launch', () {

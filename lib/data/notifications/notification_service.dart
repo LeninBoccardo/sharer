@@ -323,6 +323,11 @@ class NotificationService {
   /// (either via /peer-forgot-you or inferred from a 401). Shown as a
   /// one-shot informational toast — same lane as transferDone so the
   /// user knows their device list just changed without them touching it.
+  ///
+  /// Slice 5.2.4.1: carries a `peer_unpaired:<peerId>` payload so a
+  /// body tap reaches the router, which falls through to "open the
+  /// main window" per the user's general rule that any notification
+  /// body tap should bring the app forward.
   Future<void> showPeerUnpaired({
     required String peerId,
     required String peerName,
@@ -346,6 +351,7 @@ class NotificationService {
         ),
         iOS: DarwinNotificationDetails(),
       ),
+      payload: 'peer_unpaired:$peerId',
     );
   }
 

@@ -133,6 +133,19 @@ class NotificationRouter {
       return;
     }
 
+    // Slice 5.2.4.1: default body-tap behavior — bring the app
+    // forward whenever the user taps the body of a notification we
+    // don't have a specific route for. Covers `peer_unpaired:<id>`
+    // and any future notifications that don't carry a specific
+    // payload. We only do this for body taps (normalizedAction ==
+    // null); unknown action buttons stay no-ops so a stray button
+    // press can't open the app.
+    if (normalizedAction == null) {
+      await _showMainWindow();
+      _log('default body tap → main window (action=$actionId payload=$payload)');
+      return;
+    }
+
     _log('no route for action=$actionId payload=$payload');
   }
 
@@ -146,9 +159,12 @@ class NotificationRouter {
     if (actionId == null) return null;
     // Body-tap markers live in a different namespace from action
     // ids; collapse them to null so the payload branches handle
-    // them uniformly.
+    // them uniformly. Slice 5.2.4.1 adds `peer_unpaired:` to the
+    // list — Windows mirrors the payload into actionId for body
+    // taps, and the new peer-unpaired toast carries that payload.
     if (actionId.startsWith('transfer_done:') ||
-        actionId.startsWith('pair_invite:')) {
+        actionId.startsWith('pair_invite:') ||
+        actionId.startsWith('peer_unpaired:')) {
       return null;
     }
     return actionId;
