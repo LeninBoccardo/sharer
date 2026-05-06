@@ -53,6 +53,11 @@ Future<void> main() async {
   // cold-start routing. Must come after the service init above so
   // the stream is wired before the launch-details read.
   container.read(notificationRouterProvider);
+  // Slice 5.5: subscribes the share-sheet bridge to ACTION_SEND
+  // intents and consumes the cold-start share (if the app was
+  // launched from the share sheet). Reading the provider runs
+  // controller.start(); on non-Android platforms this is a no-op.
+  container.read(pendingSharesControllerProvider);
 
   runApp(
     UncontrolledProviderScope(

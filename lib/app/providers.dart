@@ -17,6 +17,7 @@ import '../data/notifications/notification_router.dart';
 import '../data/notifications/notification_service.dart';
 import '../data/notifications/windows_tray_controller.dart';
 import '../data/security/forget_service.dart';
+import '../data/share/incoming_share_service.dart';
 import '../data/security/hmac_verifier.dart';
 import '../data/security/pair_invite_client.dart';
 import '../data/security/pair_invite_service.dart';
@@ -44,6 +45,7 @@ import '../domain/repositories/peer_cache_repository.dart';
 import '../domain/repositories/peer_discovery_repository.dart';
 import '../domain/repositories/transfer_service.dart';
 import '../presentation/pairing/invite_controller.dart';
+import '../presentation/share/pending_shares_controller.dart';
 
 /// Composition root: every cross-layer binding is declared here so that
 /// presentation code never reaches into `data/` directly. To swap an impl
@@ -385,6 +387,44 @@ final windowsTrayControllerProvider =
   ref.onDispose(controller.dispose);
   controller.start();
   return controller;
+});
+
+// ----- OS share-sheet integration (slice 5.5) -----
+
+/// Platform bridge that listens for ACTION_SEND / ACTION_SEND_MULTIPLE
+/// intents on Android. No-op on Windows / iOS / Linux for now (Windows
+/// Share contract requires MSIX packaging — see incoming_share_service
+/// for the deferral note).
+final incomingShareServiceProvider = Provider<IncomingShareService>((ref) {
+  final svc = IncomingShareService();
+  ref.onDispose(svc.dispose);
+  return svc;
+});
+
+/// Pending files received via the share-sheet, waiting for the user to
+/// pick a destination peer. Read once at app boot from main() so the
+/// cold-start share is captured before the home screen renders.
+final pendingSharesControllerProvider =
+    Provider<PendingSharesController>((ref) {
+  final controller =
+      PendingSharesController(ref.watch(incomingShareServiceProvider));
+  ref.onDispose(controller.dispose);
+  ref.read(incomingShareServiceProvider).start();
+  controller.start();
+  return controller;
+});
+
+/// Reactive view of the pending-shares state. Home screen watches this
+/// to decide whether to show the "share into…" banner + flip the peer
+/// tile's tap handler.
+final pendingSharesProvider = StreamProvider<PendingShares>((ref) {
+  final controller = ref.watch(pendingSharesControllerProvider);
+  return Stream.value(controller.state).asyncExpand(
+    (initial) async* {
+      yield initial;
+      yield* controller.stream;
+    },
+  );
 });
 
 /// Slice 5.2.4: dispatches notification taps + action buttons. Reads

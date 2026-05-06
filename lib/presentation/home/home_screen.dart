@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mime/mime.dart';
 
 import '../../app/providers.dart';
+import '../../data/share/incoming_share_service.dart';
 import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
@@ -12,6 +15,7 @@ import '../pairing/devices_screen.dart';
 import '../pairing/invite_controller.dart';
 import '../pairing/pair_invite_modal.dart';
 import '../pairing/show_pair_screen.dart';
+import '../share/share_pending_banner.dart';
 import '../transfers/transfers_section.dart';
 import 'battery_optimization_banner.dart';
 import 'quiet_mode_banner.dart';
@@ -90,6 +94,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             children: [
               const QuietModeBanner(),
               const BatteryOptimizationBanner(),
+              const SharePendingBanner(),
               Text('Nearby devices', style: theme.textTheme.titleLarge),
               const SizedBox(height: 12),
               peersAsync.when(
@@ -207,7 +212,59 @@ class _PeerTile extends ConsumerWidget {
       await _showPairFirstSheet(context, ref);
       return;
     }
+    // Slice 5.5: if files arrived via the OS share-sheet, route them
+    // here instead of opening the file picker. Lets the user share
+    // *into* Sharer with a single tap on the destination peer.
+    final pending = ref.read(pendingSharesProvider).value;
+    if (pending != null && pending.isNotEmpty) {
+      await _sendPending(context, ref, pending.files);
+      return;
+    }
     await _pickAndSend(context, ref);
+  }
+
+  Future<void> _sendPending(
+    BuildContext context,
+    WidgetRef ref,
+    List<IncomingSharedFile> files,
+  ) async {
+    final transferService = ref.read(transferServiceProvider);
+    var queued = 0;
+    var skipped = 0;
+    for (final shared in files) {
+      try {
+        final file = File(shared.path);
+        if (!await file.exists()) {
+          skipped++;
+          continue;
+        }
+        final payload = FilePayload(
+          fileName: shared.name,
+          sizeBytes: shared.size,
+          bytes: file.openRead(),
+          mimeType: shared.mimeType ?? lookupMimeType(shared.name),
+        );
+        await transferService.send(peer: peer, file: payload);
+        queued++;
+      } catch (_) {
+        skipped++;
+      }
+    }
+    // Clear regardless — files have either been queued (their stream
+    // is opened against the cached temp file) or genuinely missing.
+    await ref.read(pendingSharesControllerProvider).clear();
+    if (!context.mounted) return;
+    if (queued == 0) {
+      _toast(context, 'Could not send shared files.');
+    } else if (queued == 1 && skipped == 0) {
+      _toast(context, 'Sending ${files.first.name} → ${peer.name}…');
+    } else {
+      _toast(
+        context,
+        'Sending $queued file${queued == 1 ? '' : 's'} → ${peer.name}'
+        '${skipped > 0 ? ' ($skipped skipped)' : ''}…',
+      );
+    }
   }
 
   Future<void> _showPairFirstSheet(BuildContext context, WidgetRef ref) async {
