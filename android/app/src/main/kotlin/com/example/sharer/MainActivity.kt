@@ -1,15 +1,19 @@
 package com.example.sharer
 
+import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 /**
@@ -34,6 +38,15 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val METHOD_CHANNEL = "sharer.share/methods"
         private const val EVENT_CHANNEL = "sharer.share/events"
+
+        /** Slice 5.3.1 — Android public Downloads bridge. The Dart side
+         *  streams ciphertext into a private staging file (cacheDir),
+         *  then calls publishToDownloads to move it into the user-
+         *  visible Downloads/Sharer/ folder via MediaStore (API 29+) or
+         *  Environment.DIRECTORY_DOWNLOADS (legacy ≤ 28). The method
+         *  returns the absolute file path the Dart side should report
+         *  as the saved location (for notifications + transfer log). */
+        private const val DOWNLOADS_CHANNEL = "sharer.downloads/methods"
     }
 
     /** True once the Dart side has called getInitialShare. Subsequent
@@ -78,6 +91,153 @@ class MainActivity : FlutterActivity() {
                     eventSink = null
                 }
             })
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DOWNLOADS_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method == "publishToDownloads") {
+                    val tempPath = call.argument<String>("tempPath")
+                    val displayName = call.argument<String>("displayName")
+                    val mimeType = call.argument<String?>("mimeType")
+                        ?: "application/octet-stream"
+                    if (tempPath == null || displayName == null) {
+                        result.error("BAD_ARGS", "tempPath/displayName required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val publishedPath = publishToDownloads(tempPath, displayName, mimeType)
+                        result.success(publishedPath)
+                    } catch (e: Exception) {
+                        result.error("PUBLISH_FAILED", e.message, null)
+                    }
+                } else {
+                    result.notImplemented()
+                }
+            }
+    }
+
+    /**
+     * Slice 5.3.1 — copy the staged ciphertext-decrypted file from
+     * cacheDir into the user-visible Downloads/Sharer/ folder.
+     *
+     * On API 29+ uses MediaStore.Downloads which doesn't require
+     * WRITE_EXTERNAL_STORAGE. On API ≤ 28 falls back to direct file
+     * write under Environment.DIRECTORY_DOWNLOADS, which is auto-
+     * granted under the legacy storage permission.
+     *
+     * Returns the absolute on-disk path so the existing OpenFilex
+     * "Open" notification action keeps working unchanged. The temp
+     * file is deleted on success.
+     */
+    private fun publishToDownloads(
+        tempPath: String,
+        displayName: String,
+        mimeType: String,
+    ): String {
+        val tempFile = File(tempPath)
+        if (!tempFile.exists()) {
+            throw IllegalStateException("staging file does not exist: $tempPath")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return publishViaMediaStore(tempFile, displayName, mimeType)
+        }
+        return publishViaLegacyDir(tempFile, displayName)
+    }
+
+    private fun publishViaMediaStore(
+        tempFile: File,
+        displayName: String,
+        mimeType: String,
+    ): String {
+        val resolver = contentResolver
+        val initial = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, displayName)
+            put(MediaStore.Downloads.MIME_TYPE, mimeType)
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/Sharer/")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri: Uri = resolver.insert(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            initial,
+        ) ?: throw IllegalStateException(
+            "MediaStore.Downloads insert returned null"
+        )
+        try {
+            resolver.openOutputStream(uri)?.use { out ->
+                FileInputStream(tempFile).use { it.copyTo(out) }
+            } ?: throw IllegalStateException(
+                "openOutputStream returned null for $uri"
+            )
+            val finalize = ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }
+            resolver.update(uri, finalize, null, null)
+            tempFile.delete()
+            // Resolve the absolute on-disk path so `open_filex` (which
+            // uses FileProvider with absolute paths) keeps working
+            // without us re-engineering the Open action.
+            val abs = resolveAbsolutePath(uri) ?: uri.toString()
+            return abs
+        } catch (e: Exception) {
+            // Best-effort cleanup of the half-written MediaStore entry.
+            try {
+                resolver.delete(uri, null, null)
+            } catch (_: Exception) {
+            }
+            throw e
+        }
+    }
+
+    private fun resolveAbsolutePath(uri: Uri): String? {
+        return try {
+            contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.DATA),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if (idx >= 0) cursor.getString(idx) else null
+                } else {
+                    null
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun publishViaLegacyDir(
+        tempFile: File,
+        displayName: String,
+    ): String {
+        val downloads = Environment.getExternalStoragePublicDirectory(
+            Environment.DIRECTORY_DOWNLOADS,
+        )
+        val sharerDir = File(downloads, "Sharer")
+        if (!sharerDir.exists() && !sharerDir.mkdirs()) {
+            throw IllegalStateException(
+                "could not create ${sharerDir.absolutePath}"
+            )
+        }
+        // Resolve unique target name: foo.txt → foo (1).txt → foo (2).txt …
+        var target = File(sharerDir, displayName)
+        if (target.exists()) {
+            val dot = displayName.lastIndexOf('.')
+            val stem = if (dot > 0) displayName.substring(0, dot) else displayName
+            val ext = if (dot > 0) displayName.substring(dot) else ""
+            var i = 1
+            while (target.exists() && i < 10_000) {
+                target = File(sharerDir, "$stem ($i)$ext")
+                i++
+            }
+        }
+        FileInputStream(tempFile).use { input ->
+            FileOutputStream(target).use { out -> input.copyTo(out) }
+        }
+        tempFile.delete()
+        return target.absolutePath
     }
 
     private fun extractShare(intent: Intent?): List<Map<String, Any?>>? {

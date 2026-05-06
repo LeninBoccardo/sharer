@@ -333,12 +333,21 @@ class HttpFileServer {
       }
       await sink.flush();
       await sink.close();
+      // Slice 5.3.1: on Android, [destFile] is in a private staging
+      // directory; publish it into the user-visible Downloads folder
+      // and report THAT path. On other platforms publish is a no-op
+      // returning destFile.path.
+      final publishedPath = await _downloads.publish(
+        tempFile: destFile,
+        displayName: destFile.uri.pathSegments.last,
+        mimeType: request.headers['content-type'],
+      );
       _events.add(IncomingProgress(id: id, bytesReceived: bytesReceived));
-      _events.add(IncomingCompleted(id: id, savedPath: destFile.path));
-      _log('Receive done id=$id bytes=$bytesReceived path=${destFile.path}');
+      _events.add(IncomingCompleted(id: id, savedPath: publishedPath));
+      _log('Receive done id=$id bytes=$bytesReceived path=$publishedPath');
       return Response.ok(
         jsonEncode({
-          'savedPath': destFile.path,
+          'savedPath': publishedPath,
           'bytesReceived': bytesReceived,
         }),
         headers: {'content-type': 'application/json'},
