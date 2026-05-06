@@ -17,6 +17,7 @@ import '../data/notifications/notification_router.dart';
 import '../data/notifications/notification_service.dart';
 import '../data/notifications/windows_tray_controller.dart';
 import '../data/security/forget_service.dart';
+import '../data/security/in_flight_invite_store.dart';
 import '../data/share/incoming_share_service.dart';
 import '../data/security/hmac_verifier.dart';
 import '../data/security/pair_invite_client.dart';
@@ -199,6 +200,13 @@ final pairingClientProvider = Provider<PairingClient>((ref) {
   return client;
 });
 
+/// Slice 5.2.4.2: persistent mailbox of in-flight invites used by the
+/// background notification isolate when the user taps Decline on a
+/// pair-invite while the main isolate is dead.
+final inFlightInviteStoreProvider = Provider<InFlightInviteStore>((ref) {
+  return InFlightInviteStore(ref.watch(secureKeyValueStoreProvider));
+});
+
 /// Slice 4.6: coordinates the LAN pair-invite handshake. One instance
 /// per session — the in-flight registry must outlive the screens that
 /// open and close around a given invite.
@@ -206,6 +214,7 @@ final pairInviteServiceProvider = Provider<PairInviteService>((ref) {
   final svc = PairInviteService(
     ref.watch(pairedDevicesRepoProvider),
     ref.watch(deviceIdentityRepoProvider),
+    mailbox: ref.watch(inFlightInviteStoreProvider),
   );
   ref.onDispose(svc.dispose);
   return svc;

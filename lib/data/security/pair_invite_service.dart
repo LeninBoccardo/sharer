@@ -12,7 +12,9 @@ import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/paired_device.dart';
 import '../../domain/repositories/device_identity_repository.dart';
 import '../../domain/repositories/paired_devices_repository.dart';
+import '../transport/transport_protocol.dart';
 import 'dh_handshake.dart';
+import 'in_flight_invite_store.dart';
 import 'long_term_signer.dart';
 
 /// Verb constants used in canonical-string framing for the slice 4.6
@@ -196,13 +198,15 @@ class PairInviteService {
   PairInviteService(
     this._paired,
     this._identity, {
+    InFlightInviteStore? mailbox,
     Random? random,
     DateTime Function()? now,
     Uuid? uuid,
     Duration inviteTtl = _defaultInviteTtl,
     Duration declineCooldown = _defaultDeclineCooldown,
     Duration expirySweepInterval = const Duration(seconds: 30),
-  })  : _random = random ?? Random.secure(),
+  })  : _mailbox = mailbox,
+        _random = random ?? Random.secure(),
         _now = now ?? DateTime.now,
         _uuid = uuid ?? const Uuid(),
         _inviteTtl = inviteTtl,
@@ -218,6 +222,13 @@ class PairInviteService {
 
   final PairedDevicesRepository _paired;
   final DeviceIdentityRepository _identity;
+
+  /// Slice 5.2.4.2: when wired, the responder side persists enough
+  /// per-invite info that a background-isolate notification handler
+  /// can fire a Decline POST without the main isolate being alive.
+  /// Optional so test setups don't all have to construct one.
+  final InFlightInviteStore? _mailbox;
+
   final Random _random;
   final DateTime Function() _now;
   final Uuid _uuid;
@@ -500,6 +511,36 @@ class PairInviteService {
       peerHost: initiatorRemoteHost,
     );
     _pending[inviteId] = entry;
+
+    // Slice 5.2.4.2: persist a pre-signed decline payload so the
+    // background notification handler can fire Decline even when the
+    // main isolate is dead. Best-effort — if the mailbox isn't wired
+    // (tests, no secure storage available) we just lose the silent-
+    // decline path. The foreground decline path is unaffected.
+    if (_mailbox != null && initiatorRemoteHost != null) {
+      final declineCanonical = _finalizeCanonical(
+        inviteId: inviteId,
+        senderId: identity.id,
+        verdict: 'decline',
+      );
+      final declineMac = Hmac(sha256, psk).convert(declineCanonical);
+      try {
+        await _mailbox.save(InFlightInviteEntry(
+          inviteId: inviteId,
+          peerId: initiatorId,
+          peerName: initiatorName,
+          peerHost: initiatorRemoteHost,
+          peerPort: TransportProtocol.defaultPort,
+          peerCertFingerprint: initiatorCertFingerprintSha256,
+          senderId: identity.id,
+          declineSignatureBase64: base64Encode(declineMac.bytes),
+          expiresAt: entry.expiresAt,
+        ));
+      } catch (e) {
+        _log('mailbox.save failed id=$inviteId: $e (BG decline disabled)');
+      }
+    }
+
     _invites.add(_toInvite(entry, PairInviteStatus.awaitingFingerprint));
     _log('acceptInvite OK id=$inviteId from=$initiatorId '
         'fingerprint=$fingerprint');
@@ -585,6 +626,7 @@ class PairInviteService {
     );
     final mac = Hmac(sha256, p.psk).convert(canonical);
     _pending.remove(inviteId);
+    await _mailbox?.remove(inviteId);
     _invites.add(_toInvite(p, PairInviteStatus.declined));
     _log('markLocalDeclined id=$inviteId peer=${p.peerId}');
     return (
@@ -636,6 +678,7 @@ class PairInviteService {
     if (verdict == 'decline') {
       p.peerDeclined = true;
       _pending.remove(inviteId);
+      await _mailbox?.remove(inviteId);
       _invites.add(_toInvite(p, PairInviteStatus.declined));
       _log('recordRemoteFinalize: peer declined id=$inviteId');
       return PairFinalizeRecorded();
@@ -671,6 +714,8 @@ class PairInviteService {
     if (p != null) {
       _invites.add(_toInvite(p, PairInviteStatus.declined));
     }
+    // Best-effort mailbox cleanup. Fire-and-forget — abandon is sync.
+    unawaited(_mailbox?.remove(inviteId) ?? Future.value());
     _log('abandon id=$inviteId');
   }
 
@@ -697,6 +742,7 @@ class PairInviteService {
     await _paired.add(paired);
     p.committed = true;
     _pending.remove(p.inviteId);
+    await _mailbox?.remove(p.inviteId);
     _invites.add(_toInvite(p, PairInviteStatus.completed));
     _log('committed id=${p.inviteId} peer=${p.peerId}');
   }
@@ -720,6 +766,13 @@ class PairInviteService {
         _invites.add(_toInvite(p, PairInviteStatus.expired));
       }
       _log('expired (in flight) id=${p.inviteId} peer=${p.peerId}');
+    }
+    // Slice 5.2.4.2: trim stale mailbox entries opportunistically. The
+    // sweep timer ticks every 30s by default, so the worst case is one
+    // BG decline POST that arrives slightly after the peer's TTL has
+    // passed — peer side ignores it (5.1.2's expiry sweep). Acceptable.
+    if (_mailbox != null && (expiredPending.isNotEmpty || _pending.isEmpty)) {
+      unawaited(_mailbox.purgeExpired(n));
     }
   }
 

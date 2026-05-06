@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'notification_background_handler.dart';
 import 'notification_channels.dart';
 
 /// Slice 5.2.4: details captured at app boot if the launch was
@@ -88,16 +89,19 @@ class NotificationService {
       ),
       onDidReceiveNotificationResponse: (response) {
         // Foreground responses arrive here. Forward to the broadcast
-        // stream so the router can route. We deliberately do not
-        // wire `onDidReceiveBackgroundNotificationResponse` — that
-        // would pull in a separate Dart isolate with its own
-        // composition root, which is overkill while every action we
-        // support either shows the UI or runs cheaply via the same
-        // process the FG service is keeping alive.
+        // stream so the router can route.
         _log('response action=${response.actionId} '
             'payload=${response.payload}');
         _responses.add(response);
       },
+      // Slice 5.2.4.2: Android dispatches notification actions with
+      // `showsUserInterface: false` to a separate Dart isolate when
+      // the main isolate is dead. The Decline button on a pair-invite
+      // notification needs that path — see
+      // notification_background_handler.dart for the full flow.
+      // Top-level @pragma('vm:entry-point') is required for AOT.
+      onDidReceiveBackgroundNotificationResponse:
+          notificationBackgroundResponseHandler,
     );
 
     await _createAndroidChannels();
