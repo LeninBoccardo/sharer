@@ -1,0 +1,282 @@
+/* Sharer landing — single-file modern CSS, no framework, no JS.
+   Dark theme with glass-card accents to read as the same product
+   as the in-app UI. Mobile-friendly via fluid sizing. */
+
+:root {
+  --bg-0: #0b0d12;
+  --bg-1: #11141b;
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-strong: rgba(255, 255, 255, 0.08);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e7eaf0;
+  --text-dim: #9aa3b2;
+  --accent: #7c5cff;
+  --accent-glow: rgba(124, 92, 255, 0.35);
+  --success: #4ade80;
+  --max-w: 1100px;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui,
+    'Inter', 'Roboto', sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(124, 92, 255, 0.18), transparent 60%),
+    radial-gradient(900px 500px at 0% 30%, rgba(70, 145, 255, 0.12), transparent 60%),
+    var(--bg-0);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--text);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+
+a:hover {
+  color: var(--accent);
+}
+
+h1, h2, h3 {
+  margin: 0 0 0.5em;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: clamp(2.2rem, 5vw, 3.8rem);
+  line-height: 1.1;
+}
+
+h2 {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+}
+
+h3 {
+  font-size: 1.15rem;
+}
+
+p {
+  margin: 0 0 1em;
+}
+
+/* Hero --------------------------------------------------------- */
+.hero {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 4rem;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0 3rem;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.logo img {
+  display: block;
+}
+
+.nav-link {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 8px;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.nav-link:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.hero-content {
+  max-width: 720px;
+}
+
+.tagline {
+  color: var(--text-dim);
+  font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+  margin-bottom: 2.5rem;
+  max-width: 60ch;
+}
+
+/* Downloads ---------------------------------------------------- */
+.downloads {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.download-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 1rem 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: transform 120ms ease, background 120ms ease, border 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.download-btn.primary:hover {
+  background: var(--surface-strong);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 30px var(--accent-glow);
+  color: var(--text);
+}
+
+.download-btn.coming-soon {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.download-btn.coming-soon:hover {
+  transform: none;
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.platform-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.platform-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.platform-label {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.platform-sub {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.micro {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+/* Features ----------------------------------------------------- */
+.features {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.feature {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: transform 200ms ease, border 200ms ease;
+}
+
+.feature:hover {
+  transform: translateY(-2px);
+  border-color: rgba(124, 92, 255, 0.3);
+}
+
+.feature-icon {
+  font-size: 1.8rem;
+  margin-bottom: 0.75rem;
+}
+
+.feature p {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+/* How it works ------------------------------------------------- */
+.how {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+.how ol {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--text-dim);
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.how li {
+  margin-bottom: 0.5rem;
+}
+
+.how strong {
+  color: var(--text);
+}
+
+/* Footer ------------------------------------------------------- */
+footer {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 3rem 1.5rem 4rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+footer p {
+  margin: 0 0 0.5rem;
+}
+
+footer a {
+  color: var(--text-dim);
+}
+
+footer a:hover {
+  color: var(--accent);
+}
+
+/* Reduced motion ---------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

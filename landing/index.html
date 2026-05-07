@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sharer — Fast, private LAN file sharing</title>
+  <meta name="description" content="Sharer is a peer-to-peer file-sharing app for your local network. End-to-end encrypted. No accounts, no cloud, no upload limits.">
+  <meta property="og:title" content="Sharer — Fast, private LAN file sharing">
+  <meta property="og:description" content="Peer-to-peer, end-to-end encrypted, on your own network. No accounts, no cloud.">
+  <meta property="og:type" content="website">
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <nav class="nav">
+      <a class="logo" href="#">
+        <img src="assets/logo.svg" alt="" width="28" height="28">
+        <span>Sharer</span>
+      </a>
+      <a class="nav-link" href="https://github.com/LeninBoccardo/sharer" rel="noopener">GitHub</a>
+    </nav>
+
+    <div class="hero-content">
+      <h1>Move files. Not metadata.</h1>
+      <p class="tagline">
+        Peer-to-peer file sharing on your local network. End-to-end encrypted.
+        No accounts, no cloud, no upload limits — just your devices, talking
+        directly.
+      </p>
+
+      <div class="downloads">
+        <a class="download-btn primary" href="https://github.com/LeninBoccardo/sharer/releases/latest/download/sharer-android.apk" data-platform="android">
+          <span class="platform-icon" aria-hidden="true">📱</span>
+          <span class="platform-meta">
+            <span class="platform-label">Android</span>
+            <span class="platform-sub">.apk · sideload</span>
+          </span>
+        </a>
+        <a class="download-btn primary" href="https://github.com/LeninBoccardo/sharer/releases/latest/download/sharer-windows.exe" data-platform="windows">
+          <span class="platform-icon" aria-hidden="true">🪟</span>
+          <span class="platform-meta">
+            <span class="platform-label">Windows</span>
+            <span class="platform-sub">.exe · 64-bit</span>
+          </span>
+        </a>
+        <a class="download-btn coming-soon" href="#" data-platform="macos" aria-disabled="true">
+          <span class="platform-icon" aria-hidden="true">🍎</span>
+          <span class="platform-meta">
+            <span class="platform-label">macOS</span>
+            <span class="platform-sub">Coming soon</span>
+          </span>
+        </a>
+        <a class="download-btn coming-soon" href="#" data-platform="linux" aria-disabled="true">
+          <span class="platform-icon" aria-hidden="true">🐧</span>
+          <span class="platform-meta">
+            <span class="platform-label">Linux</span>
+            <span class="platform-sub">AppImage · soon</span>
+          </span>
+        </a>
+      </div>
+
+      <p class="micro">iOS support is on the roadmap (v2). Android requires
+      sideloading for now — not on the Play Store yet.</p>
+    </div>
+  </header>
+
+  <section class="features">
+    <div class="feature">
+      <div class="feature-icon" aria-hidden="true">⚡</div>
+      <h3>Direct, not detoured</h3>
+      <p>Files travel device-to-device over Wi-Fi. There's no server in the
+      middle and no upload step — what your sender's network can do, you get.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon" aria-hidden="true">🔒</div>
+      <h3>Encrypted end-to-end</h3>
+      <p>Every chunk is sealed with AES-256-GCM. Devices pair once via QR code
+      and pin each other's TLS certificate — only paired peers can complete a
+      transfer.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon" aria-hidden="true">🚫</div>
+      <h3>No accounts. Ever.</h3>
+      <p>No sign-up, no email, no recovery flow. Your phone and your laptop
+      know each other; that's the whole authentication model.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon" aria-hidden="true">📦</div>
+      <h3>Any file, any size</h3>
+      <p>Stream-encrypted in 64 KB chunks — never loaded into memory. A 4 GB
+      video transfers like a 4 KB document, just slower.</p>
+    </div>
+  </section>
+
+  <section class="how">
+    <h2>How it works</h2>
+    <ol>
+      <li><strong>Pair once.</strong> Open both devices, scan a QR code,
+      confirm a 6-digit fingerprint. The two devices remember each other
+      forever.</li>
+      <li><strong>Share from anywhere.</strong> The system share menu sends
+      files into Sharer; pick a peer, transfer starts.</li>
+      <li><strong>Stay quiet on hostile Wi-Fi.</strong> On a network you
+      haven't trusted, Sharer goes silent — paired peers can still reach you,
+      but nobody else can see you exist.</li>
+    </ol>
+  </section>
+
+  <footer>
+    <p>
+      Open source · <a href="https://github.com/LeninBoccardo/sharer" rel="noopener">GitHub</a>
+      · <a href="https://github.com/LeninBoccardo/sharer/blob/main/docs/v1/security.md" rel="noopener">Security model</a>
+    </p>
+    <p class="micro">
+      Made with care, not VC funding. Bug reports welcome.
+    </p>
+  </footer>
+</body>
+</html>
