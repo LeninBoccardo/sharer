@@ -15,6 +15,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Slice 5.5 — Android share-sheet integration.
@@ -79,6 +81,30 @@ class MainActivity : FlutterActivity() {
      */
     private val pendingEvents = ArrayDeque<List<Map<String, Any?>>>()
 
+    /**
+     * Slice 5.x.3.3: dedicated background thread for share extraction
+     * (content URI → cacheDir copy). Both onCreate and onNewIntent
+     * dispatch here instead of running on the UI thread. A multi-GB
+     * ACTION_SEND_MULTIPLE used to ANR before Flutter ever saw the
+     * event; now the UI thread returns immediately and the result is
+     * posted back via runOnUiThread when the copy completes.
+     *
+     * Single-threaded so two shares queued in quick succession process
+     * in arrival order without a new thread per share.
+     */
+    private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "sharer-share-io").apply { isDaemon = true }
+    }
+
+    /**
+     * State for the cold-start extraction (slice 5.x.3.3): the UI
+     * thread needs to know whether extraction is still running so
+     * `getInitialShare` can either deliver immediately or defer the
+     * MethodChannel.Result until the bg copy finishes.
+     */
+    private var initialExtractDone = false
+    private var pendingInitialResult: MethodChannel.Result? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Slice 5.x.3.2: restore the consumed flag first. If the
@@ -87,7 +113,31 @@ class MainActivity : FlutterActivity() {
         // so without this we'd hand the same share to Dart twice.
         initialShareConsumed =
             savedInstanceState?.getBoolean(STATE_INITIAL_CONSUMED, false) ?: false
-        initialShare = if (initialShareConsumed) null else extractShare(intent)
+        if (initialShareConsumed) {
+            initialExtractDone = true
+            return
+        }
+        // Slice 5.x.3.3: kick the heavy content-URI copy off the UI
+        // thread. We may still be running while Dart calls
+        // getInitialShare — handled in the MethodChannel callback below.
+        val intentSnapshot = intent
+        ioExecutor.submit {
+            val items = try {
+                extractShare(intentSnapshot)
+            } catch (_: Exception) {
+                null
+            }
+            runOnUiThread {
+                initialShare = items
+                initialExtractDone = true
+                val pending = pendingInitialResult
+                if (pending != null) {
+                    pendingInitialResult = null
+                    initialShareConsumed = true
+                    pending.success(items)
+                }
+            }
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -95,17 +145,33 @@ class MainActivity : FlutterActivity() {
         outState.putBoolean(STATE_INITIAL_CONSUMED, initialShareConsumed)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        ioExecutor.shutdown()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val items = extractShare(intent) ?: return
-        val sink = eventSink
-        if (sink != null) {
-            sink.success(items)
-        } else {
-            // Buffer: Dart hasn't attached yet (cold-start race) or has
-            // temporarily detached. Drained on the next onListen.
-            if (pendingEvents.size >= 32) pendingEvents.removeFirst()
-            pendingEvents.addLast(items)
+        // Slice 5.x.3.3: extract on the IO executor; deliver back on
+        // the UI thread to keep the eventSink/buffer access single-
+        // threaded.
+        val intentSnapshot = intent
+        ioExecutor.submit {
+            val items = try {
+                extractShare(intentSnapshot) ?: return@submit
+            } catch (_: Exception) {
+                return@submit
+            }
+            runOnUiThread {
+                val sink = eventSink
+                if (sink != null) {
+                    sink.success(items)
+                } else {
+                    // Buffer: Dart hasn't attached yet or has detached.
+                    if (pendingEvents.size >= 32) pendingEvents.removeFirst()
+                    pendingEvents.addLast(items)
+                }
+            }
         }
     }
 
@@ -114,11 +180,25 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
                 if (call.method == "getInitialShare") {
-                    if (initialShareConsumed) {
-                        result.success(null)
-                    } else {
-                        initialShareConsumed = true
-                        result.success(initialShare)
+                    when {
+                        initialShareConsumed -> result.success(null)
+                        // Slice 5.x.3.3: if the bg extraction is still
+                        // in flight, hold the result and deliver it
+                        // when the IO executor's runOnUiThread fires.
+                        // Don't mark consumed yet — only after we hand
+                        // real data back. Otherwise an activity restart
+                        // mid-extraction would lose the share.
+                        !initialExtractDone -> {
+                            // Defensive: Dart only calls getInitialShare
+                            // once, but if a second call somehow arrived
+                            // resolve the previous one first.
+                            pendingInitialResult?.success(null)
+                            pendingInitialResult = result
+                        }
+                        else -> {
+                            initialShareConsumed = true
+                            result.success(initialShare)
+                        }
                     }
                 } else {
                     result.notImplemented()
