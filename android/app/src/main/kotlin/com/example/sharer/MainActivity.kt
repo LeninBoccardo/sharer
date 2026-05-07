@@ -47,24 +47,66 @@ class MainActivity : FlutterActivity() {
          *  returns the absolute file path the Dart side should report
          *  as the saved location (for notifications + transfer log). */
         private const val DOWNLOADS_CHANNEL = "sharer.downloads/methods"
+
+        /** Slice 5.x.3.2 — savedInstanceState key for the initial-
+         *  share-consumed flag, so a Realme black-frame activity
+         *  restart doesn't re-fire the same cold-start intent. */
+        private const val STATE_INITIAL_CONSUMED = "sharer.initialShareConsumed"
     }
 
     /** True once the Dart side has called getInitialShare. Subsequent
      *  calls return null so a hot-restart doesn't re-fire the launch
-     *  share. */
+     *  share.
+     *
+     *  Slice 5.x.3.2: persisted across activity restart via
+     *  onSaveInstanceState. Realme/ColorOS kills + restarts the activity
+     *  during the black-frame quirk documented in
+     *  reference_realme_ui_quirks.md; without persistence the same
+     *  cold-start intent re-fires and Dart sees the share twice. */
     private var initialShareConsumed = false
     private var initialShare: List<Map<String, Any?>>? = null
     private var eventSink: EventChannel.EventSink? = null
 
+    /**
+     * Slice 5.x.3.1: events that arrived via onNewIntent before the Dart
+     * side attached its EventChannel listener. Drained on the next
+     * onListen. The hot path (Dart already listening) bypasses this
+     * entirely — eventSink is non-null and we deliver directly.
+     *
+     * Capped at 32 to bound memory if a runaway sender posts shares to
+     * a Dart-side that never re-subscribes; in practice the queue
+     * should hold 0–1 items only during the brief startup window.
+     */
+    private val pendingEvents = ArrayDeque<List<Map<String, Any?>>>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        initialShare = extractShare(intent)
+        // Slice 5.x.3.2: restore the consumed flag first. If the
+        // activity is being recreated after a Realme black-frame
+        // restart, intent is the same retained intent the system holds,
+        // so without this we'd hand the same share to Dart twice.
+        initialShareConsumed =
+            savedInstanceState?.getBoolean(STATE_INITIAL_CONSUMED, false) ?: false
+        initialShare = if (initialShareConsumed) null else extractShare(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_INITIAL_CONSUMED, initialShareConsumed)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val items = extractShare(intent) ?: return
-        eventSink?.success(items)
+        val sink = eventSink
+        if (sink != null) {
+            sink.success(items)
+        } else {
+            // Buffer: Dart hasn't attached yet (cold-start race) or has
+            // temporarily detached. Drained on the next onListen.
+            if (pendingEvents.size >= 32) pendingEvents.removeFirst()
+            pendingEvents.addLast(items)
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -86,6 +128,14 @@ class MainActivity : FlutterActivity() {
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     eventSink = events
+                    // Slice 5.x.3.1: drain anything that arrived via
+                    // onNewIntent before Dart was listening. FIFO so
+                    // the user sees shares in arrival order.
+                    if (events != null) {
+                        while (pendingEvents.isNotEmpty()) {
+                            events.success(pendingEvents.removeFirst())
+                        }
+                    }
                 }
                 override fun onCancel(arguments: Any?) {
                     eventSink = null
