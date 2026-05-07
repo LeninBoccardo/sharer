@@ -10,40 +10,68 @@ class PeerCacheStore implements PeerCacheRepository {
 
   final SharedPreferences _prefs;
 
+  /// In-memory snapshot of the cache, lazily hydrated from
+  /// SharedPreferences on first access. Every read goes here; every
+  /// write goes here first and (conditionally) flushes to disk.
+  ///
+  /// Slice 5.x.2.2: previously every operation did
+  /// load → JSON-decode → mutate → JSON-encode → setString. With three
+  /// HMAC-verified inbound paths in `http_file_server.dart` calling
+  /// [cacheAddress] per request, that's a measurable per-request stall
+  /// at the start of a transfer where latency matters most.
+  List<Peer>? _cache;
+
   PeerCacheStore(this._prefs);
 
-  @override
-  Future<List<Peer>> load() async {
+  Future<List<Peer>> _ensureLoaded() async {
+    final cached = _cache;
+    if (cached != null) return cached;
     final raw = _prefs.getString(_key);
-    if (raw == null || raw.isEmpty) return const [];
+    if (raw == null || raw.isEmpty) {
+      return _cache = <Peer>[];
+    }
     final decoded = jsonDecode(raw) as List<dynamic>;
-    return decoded
+    return _cache = decoded
         .map((e) => _fromJson(e as Map<String, dynamic>))
-        .toList(growable: false);
+        .toList();
   }
 
-  @override
-  Future<void> save(List<Peer> peers) async {
-    final encoded = jsonEncode(peers.map(_toJson).toList());
+  Future<void> _persist() async {
+    final list = _cache;
+    if (list == null) return;
+    final encoded = jsonEncode(list.map(_toJson).toList());
     await _prefs.setString(_key, encoded);
   }
 
   @override
+  Future<List<Peer>> load() async {
+    return List<Peer>.unmodifiable(await _ensureLoaded());
+  }
+
+  @override
+  Future<void> save(List<Peer> peers) async {
+    _cache = List<Peer>.of(peers);
+    await _persist();
+  }
+
+  @override
   Future<void> upsert(Peer peer) async {
-    final list = (await load()).toList();
+    final list = await _ensureLoaded();
     final i = list.indexWhere((p) => p.id == peer.id);
     if (i >= 0) {
       list[i] = peer;
     } else {
       list.add(peer);
     }
-    await save(list);
+    await _persist();
   }
 
   @override
   Future<void> remove(String peerId) async {
-    final list = (await load()).where((p) => p.id != peerId).toList();
-    await save(list);
+    final list = await _ensureLoaded();
+    final before = list.length;
+    list.removeWhere((p) => p.id == peerId);
+    if (list.length != before) await _persist();
   }
 
   @override
@@ -53,19 +81,30 @@ class PeerCacheStore implements PeerCacheRepository {
     required int port,
     String? displayName,
   }) async {
-    final list = (await load()).toList();
+    final list = await _ensureLoaded();
     final i = list.indexWhere((p) => p.id == deviceId);
     final now = DateTime.now();
     if (i >= 0) {
-      list[i] = list[i].copyWith(
+      final existing = list[i];
+      // Always refresh in-memory state so the current session sees the
+      // latest lastSeen. Only burn a SharedPreferences write when
+      // something callers will care about across restarts changed —
+      // bumping lastSeen alone isn't worth the JSON-encode + disk
+      // write per HMAC-verified inbound.
+      final addrChanged =
+          existing.host != host || existing.port != port;
+      final nameChanged =
+          displayName != null && existing.name != displayName;
+      list[i] = existing.copyWith(
         host: host,
         port: port,
         lastSeen: now,
         // The display name on a Peer is mainly UI cosmetic; only
         // overwrite it when the caller actually has one. Keeps cached
         // names from being clobbered by signatures that omit them.
-        name: displayName ?? list[i].name,
+        name: displayName ?? existing.name,
       );
+      if (addrChanged || nameChanged) await _persist();
     } else {
       list.add(Peer(
         id: deviceId,
@@ -75,13 +114,13 @@ class PeerCacheStore implements PeerCacheRepository {
         isPaired: true,
         lastSeen: now,
       ));
+      await _persist();
     }
-    await save(list);
   }
 
   @override
   Future<Peer?> getById(String deviceId) async {
-    final list = await load();
+    final list = await _ensureLoaded();
     for (final p in list) {
       if (p.id == deviceId) return p;
     }
