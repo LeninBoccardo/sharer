@@ -12,7 +12,7 @@ import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
 import '../diagnostics/diagnostics_screen.dart';
 import '../pairing/devices_screen.dart';
-import '../pairing/invite_controller.dart';
+import '../../data/security/invite_controller.dart';
 import '../pairing/pair_invite_modal.dart';
 import '../pairing/show_pair_screen.dart';
 import '../share/share_pending_banner.dart';

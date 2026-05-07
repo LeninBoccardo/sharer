@@ -3,14 +3,14 @@ import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 
-import '../../data/security/pair_invite_client.dart';
-import '../../data/security/pair_invite_service.dart';
-import '../../data/security/tls_key_material_store.dart';
-import '../../data/transport/transport_protocol.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
 import '../../domain/repositories/device_identity_repository.dart';
 import '../../domain/repositories/peer_cache_repository.dart';
+import '../transport/transport_protocol.dart';
+import 'pair_invite_client.dart';
+import 'pair_invite_service.dart';
+import 'tls_key_material_store.dart';
 
 /// Outcome of [InviteController.invite]. Drives the UI between
 /// "couldn't reach peer" (snackbar) and "show fingerprint modal".

@@ -48,7 +48,7 @@ import '../domain/repositories/paired_devices_repository.dart';
 import '../domain/repositories/peer_cache_repository.dart';
 import '../domain/repositories/peer_discovery_repository.dart';
 import '../domain/repositories/transfer_service.dart';
-import '../presentation/pairing/invite_controller.dart';
+import '../data/security/invite_controller.dart';
 import '../presentation/share/pending_shares_controller.dart';
 
 /// Composition root: every cross-layer binding is declared here so that

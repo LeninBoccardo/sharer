@@ -4,7 +4,7 @@ import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-import '../../presentation/pairing/invite_controller.dart';
+import '../security/invite_controller.dart';
 import 'notification_channels.dart';
 import 'notification_service.dart';
 

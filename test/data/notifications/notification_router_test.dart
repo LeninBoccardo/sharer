@@ -10,7 +10,7 @@ import 'package:sharer/data/security/pair_invite_service.dart';
 import 'package:sharer/data/security/paired_devices_store.dart';
 import 'package:sharer/data/security/tls_key_material.dart';
 import 'package:sharer/data/security/tls_key_material_store.dart';
-import 'package:sharer/presentation/pairing/invite_controller.dart';
+import 'package:sharer/data/security/invite_controller.dart';
 
 import '../../fakes/fake_secure_key_value_store.dart';
 import '../../fakes/static_identity_repo.dart';
