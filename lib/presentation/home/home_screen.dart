@@ -343,7 +343,39 @@ class _PeerTile extends ConsumerWidget {
 
   Future<void> _sendInvite(BuildContext context, WidgetRef ref) async {
     final controller = ref.read(inviteControllerProvider);
-    final outcome = await controller.invite(peer);
+
+    // Slice 5.2.4.1.1: show a non-dismissable progress dialog during
+    // the network round-trip (createInvite → POST /pair-invite →
+    // completeInvite). Without this, the UI is frozen for ~0.5–2 s
+    // while the responder's TLS handshake + Ed25519 signing happen
+    // and it looks like the app died. Auto-dismissed in the finally
+    // block whether the invite succeeds or fails.
+    final navigator = Navigator.of(context, rootNavigator: true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 16),
+            Expanded(child: Text('Sending pair request to ${peer.name}…')),
+          ],
+        ),
+      ),
+    );
+
+    InviteOutcome? outcome;
+    try {
+      outcome = await controller.invite(peer);
+    } finally {
+      if (navigator.canPop()) navigator.pop();
+    }
     if (!context.mounted) return;
     switch (outcome) {
       case InviteLaunched(:final invite):
