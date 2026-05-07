@@ -8,5 +8,9 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Slice 5.x.5 phase 2: Sharer is both a server (peers POST to us)
+	     and a client (we POST to peers). Sandbox needs both flags. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>

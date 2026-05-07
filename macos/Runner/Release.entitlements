@@ -4,5 +4,13 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Slice 5.x.5 phase 2: Release entitlements must include the same
+	     network flags as DebugProfile.entitlements, otherwise the
+	     release-built .app silently fails every socket call.
+	     Sharer is both server (peers POST to us) and client. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>

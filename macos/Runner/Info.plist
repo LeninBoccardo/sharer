@@ -28,5 +28,16 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Slice 5.x.5 phase 2 — macOS launch-readiness.
+	     Apple gates mDNS browse on these two keys since macOS 13. Without
+	     NSBonjourServices, Bonsoir's NSNetServiceBrowser silently returns
+	     no results; without NSLocalNetworkUsageDescription, the OS won't
+	     even prompt the user for the local-network permission. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_sharer._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Sharer browses the local network to discover paired devices for direct file transfer.</string>
 </dict>
 </plist>
