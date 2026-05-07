@@ -288,13 +288,22 @@ class NotificationService {
               'View',
               showsUserInterface: true,
             ),
-            // showsUserInterface=false: decline runs entirely in the
-            // backgrounded process — no need to surface the modal
-            // just to confirm a no.
+            // Slice 5.2.4.2.1: Decline now also brings the activity
+            // forward (showsUserInterface: true). Slice 5.2.4.2 had
+            // it as `false` with a background-isolate handler doing
+            // the silent decline — that worked in our unit tests but
+            // never fired on Realme UI / Android 13 in real-device
+            // validation (Realme UI's aggressive battery management
+            // appears to drop notification action broadcasts to
+            // non-running processes). Bringing the activity forward
+            // is reliable across OEMs at the cost of a brief
+            // window-flash; the foreground action handler runs
+            // immediately and emits PairInviteStatus.declined, and
+            // PairInviteModal closes itself when it sees that.
             AndroidNotificationAction(
               NotificationActions.inviteReject,
               'Decline',
-              showsUserInterface: false,
+              showsUserInterface: true,
             ),
           ],
         ),
