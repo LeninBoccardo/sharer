@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Slice 5.x.5 phase 3 — AppImage entry point.
+#
+# AppImageLauncher / appimagetool unpacks the AppImage to a temporary
+# mount point and runs THIS script with $APPDIR pointing at the
+# unpacked tree. Our job: set LD_LIBRARY_PATH so the bundled
+# libsecret/avahi/glib are picked up before the host's, then exec the
+# real Flutter binary.
+#
+# We DON'T bundle avahi-daemon itself — that's a system service. If
+# it's not running on the host, Bonsoir will fail to browse. Document
+# this clearly in the user-facing notes.
+
+set -euo pipefail
+
+HERE="$(dirname -- "$(readlink -f -- "$0")")"
+
+# Bundled libraries override the host's. flutter_secure_storage's
+# libsecret link target on Linux is the most fragile dep across distros;
+# bundling our own copy is the simplest path to a portable binary.
+export LD_LIBRARY_PATH="${HERE}/usr/lib:${HERE}/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+
+# GTK_PATH: needed when bundling a private GTK build. Not strictly
+# required when relying on the host's GTK 3 (which is what we do today),
+# but harmless to set defensively.
+export GTK_PATH="${HERE}/usr/lib/gtk-3.0:${GTK_PATH:-}"
+
+# Pass through all caller args.
+exec "${HERE}/usr/bin/sharer" "$@"

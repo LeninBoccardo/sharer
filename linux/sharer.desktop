@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Sharer
+GenericName=LAN file sharing
+Comment=Peer-to-peer file sharing on your local network. End-to-end encrypted.
+Exec=sharer %U
+Icon=sharer
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=share;transfer;p2p;lan;wifi;
+StartupNotify=true
+StartupWMClass=sharer
