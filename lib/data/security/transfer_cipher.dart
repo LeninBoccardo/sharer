@@ -31,11 +31,17 @@ import 'package:cryptography/cryptography.dart';
 /// before chunk i+1's ciphertext finishes downloading. Memory use is
 /// bounded by [kPlaintextChunkSize] plus the in-flight frame header.
 
-/// Plaintext chunk size in bytes. 32 KB balances per-chunk overhead
-/// (header+tag = 24 B) against latency (smaller = receiver writes earlier
-/// on slow links). Picked from the 16–64 KB range docs/v1/security.md
-/// §8 calls out.
-const int kPlaintextChunkSize = 32 * 1024;
+/// Plaintext chunk size in bytes. 64 KB — the upper end of the
+/// 16–64 KB range docs/v1/security.md §8 calls out.
+///
+/// Slice 5.3.2.1: bumped from 32 KB after slice 5.x.1 validation
+/// surfaced that 111 MB transfers were taking ~15 s. Per-chunk fixed
+/// cost (encrypt + 8 B header + 16 B tag + HTTP write) doesn't scale
+/// with chunk size, so doubling the chunk halves the chunk count
+/// (~3500 → ~1750 for a 111 MB file). Memory footprint is still
+/// bounded by exactly one chunk in flight; native AES has no problem
+/// with the larger block.
+const int kPlaintextChunkSize = 64 * 1024;
 
 /// 4-byte chunkIndex + 4-byte ciphertextLength.
 const int _frameHeaderBytes = 8;
