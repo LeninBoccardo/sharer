@@ -142,10 +142,12 @@ void main() {
     });
   });
 
-  test('asserts when constructed without pin or TOFU sink', () {
+  test('throws StateError when constructed without pin or TOFU sink', () {
+    // Slice 5.x.2.3: was an `assert` (stripped in release); is now a
+    // real throw so a release build can't accidentally accept any cert.
     expect(
       () => buildPinningHttpClient(),
-      throwsA(isA<AssertionError>()),
+      throwsA(isA<StateError>()),
     );
   });
 

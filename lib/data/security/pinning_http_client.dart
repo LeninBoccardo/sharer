@@ -32,9 +32,19 @@ HttpClient buildPinningHttpClient({
   String? expectedFingerprint,
   TofuSink? tofuSink,
 }) {
-  assert(expectedFingerprint != null || tofuSink != null,
-      'buildPinningHttpClient needs either a pin or a TOFU sink — '
-      'otherwise no cert can ever be accepted');
+  // Slice 5.x.2.3: a real throw, not an assert. assert is stripped in
+  // release builds — without this guard a release call with both args
+  // null would slip through to the badCertificateCallback's
+  // `tofuSink!.call(...)` and crash with a null-check error mid-TLS
+  // handshake (caller's HttpException would then get a misleading
+  // message). Worse, any future refactor that lets both go null without
+  // crashing would silently accept every cert (the TOFU branch returns
+  // true unconditionally).
+  if (expectedFingerprint == null && tofuSink == null) {
+    throw StateError(
+        'buildPinningHttpClient needs either a pin or a TOFU sink — '
+        'otherwise no cert can ever be accepted');
+  }
 
   final ctx = SecurityContext(withTrustedRoots: false);
   final client = HttpClient(context: ctx);

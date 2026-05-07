@@ -38,6 +38,22 @@ class UploadStatusException implements Exception {
       '(POST $uri)';
 }
 
+/// Slice 5.x.2.3: typed failure for a production (TLS) upload to a
+/// paired peer whose entry has no `certFingerprint` (PairedDevice's doc
+/// comment explicitly allows this for pre-TLS / pre-5.1 rows). Without
+/// a pin we have no trust anchor — the alternative is accept-any-cert,
+/// which is a silent MITM hole. Surfacing this lets the UI prompt the
+/// user to re-pair instead of failing with an opaque TLS error.
+class UnpinnedPeerException implements Exception {
+  UnpinnedPeerException({required this.host, required this.port});
+  final String host;
+  final int port;
+
+  @override
+  String toString() => 'Refusing TLS upload to $host:$port — paired entry '
+      'has no certificate fingerprint. Re-pair the device.';
+}
+
 /// Sending side of the file-transfer transport. Streams the payload in
 /// a single chunked POST — never reads the whole file into memory.
 ///
@@ -82,6 +98,15 @@ class HttpFileClient {
     final scheme = useTls ? 'https' : 'http';
     final uri =
         Uri.parse('$scheme://$host:$port${TransportProtocol.uploadPath}');
+
+    // Slice 5.x.2.3: refuse TLS upload to a paired peer whose entry
+    // carries no cert fingerprint — the alternative is reaching the
+    // pinning client with both args null and crashing inside the
+    // bad-certificate callback. Surfacing this as a typed exception
+    // lets the UI prompt the user to re-pair.
+    if (useTls && recipientCertFingerprint == null) {
+      throw UnpinnedPeerException(host: host, port: port);
+    }
 
     // Slice 5.3: when we have a PSK to sign with, we also encrypt every
     // chunk end-to-end. Unsigned uploads (test convenience only) stay
