@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -447,6 +450,18 @@ final notificationRouterProvider =
     service: ref.watch(notificationServiceProvider),
     inviteController: ref.watch(inviteControllerProvider),
     openFile: (path) async {
+      // Slice 5.x.3.5: Android 11+ MediaStore can hand back a
+      // `content://` URI when MediaColumns.DATA resolves to null.
+      // OpenFilex only handles absolute file paths, so route URIs
+      // through the dedicated Kotlin channel that fires
+      // Intent.ACTION_VIEW with FLAG_GRANT_READ_URI_PERMISSION.
+      if (path.startsWith('content://')) {
+        if (Platform.isAndroid) {
+          const channel = MethodChannel('sharer.downloads/methods');
+          await channel.invokeMethod<bool>('openByUri', {'uri': path});
+        }
+        return;
+      }
       await OpenFilex.open(path);
     },
     showMainWindow: tray.showMainWindow,

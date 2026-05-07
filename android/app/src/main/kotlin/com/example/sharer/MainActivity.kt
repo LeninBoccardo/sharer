@@ -223,25 +223,98 @@ class MainActivity : FlutterActivity() {
             })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DOWNLOADS_CHANNEL)
             .setMethodCallHandler { call, result ->
-                if (call.method == "publishToDownloads") {
-                    val tempPath = call.argument<String>("tempPath")
-                    val displayName = call.argument<String>("displayName")
-                    val mimeType = call.argument<String?>("mimeType")
-                        ?: "application/octet-stream"
-                    if (tempPath == null || displayName == null) {
-                        result.error("BAD_ARGS", "tempPath/displayName required", null)
-                        return@setMethodCallHandler
+                when (call.method) {
+                    "publishToDownloads" -> {
+                        val tempPath = call.argument<String>("tempPath")
+                        val displayName = call.argument<String>("displayName")
+                        val mimeType = call.argument<String?>("mimeType")
+                            ?: "application/octet-stream"
+                        if (tempPath == null || displayName == null) {
+                            result.error("BAD_ARGS", "tempPath/displayName required", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val publishedPath = publishToDownloads(tempPath, displayName, mimeType)
+                            result.success(publishedPath)
+                        } catch (e: Exception) {
+                            result.error("PUBLISH_FAILED", e.message, null)
+                        }
                     }
-                    try {
-                        val publishedPath = publishToDownloads(tempPath, displayName, mimeType)
-                        result.success(publishedPath)
-                    } catch (e: Exception) {
-                        result.error("PUBLISH_FAILED", e.message, null)
+                    // Slice 5.x.3.5 (#17): MediaStore.MediaColumns.DATA
+                    // is frequently null on Android 11+, so
+                    // publishToDownloads can return a `content://` URI
+                    // instead of an absolute path. OpenFilex can't
+                    // open URIs; this method bridges via
+                    // Intent.ACTION_VIEW + ContentResolver MIME guess
+                    // so the "Open" notification action keeps working.
+                    "openByUri" -> {
+                        val uriString = call.argument<String>("uri")
+                        if (uriString == null) {
+                            result.error("BAD_ARGS", "uri required", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val uri = Uri.parse(uriString)
+                            val mimeType = contentResolver.getType(uri)
+                                ?: "application/octet-stream"
+                            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, mimeType)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(viewIntent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("OPEN_FAILED", e.message, null)
+                        }
                     }
-                } else {
-                    result.notImplemented()
+                    else -> result.notImplemented()
                 }
             }
+
+        // Slice 5.x.3.5 (#16): sweep orphan IS_PENDING=1 MediaStore
+        // entries that we own. JVM kill between insert(IS_PENDING=1)
+        // and update(IS_PENDING=0) leaves an entry that's invisible
+        // to the user and never reclaimed (Android auto-expires after
+        // 7 days, but until then a fresh insert with the same
+        // displayName collides and gets renamed to "foo (1).txt").
+        // Only on fresh creation — savedInstanceState being non-null
+        // means an activity restart, where this work is wasted.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ioExecutor.submit { sweepOrphanPendingDownloads() }
+        }
+    }
+
+    private fun sweepOrphanPendingDownloads() {
+        try {
+            val resolver = contentResolver
+            val selection =
+                "${MediaStore.Downloads.IS_PENDING}=? AND " +
+                    "${MediaStore.Downloads.OWNER_PACKAGE_NAME}=?"
+            val selectionArgs = arrayOf("1", packageName)
+            resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads._ID),
+                selection,
+                selectionArgs,
+                null,
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndex(MediaStore.Downloads._ID)
+                if (idCol < 0) return@use
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idCol)
+                    val orphan = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                        .buildUpon().appendPath(id.toString()).build()
+                    try {
+                        resolver.delete(orphan, null, null)
+                    } catch (_: Exception) {
+                        // Best-effort cleanup; never fail boot for this.
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Same — never fail boot for an opportunistic sweep.
+        }
     }
 
     /**
