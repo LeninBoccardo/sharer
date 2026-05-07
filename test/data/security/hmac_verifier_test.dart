@@ -2,12 +2,22 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shelf/shelf.dart';
 import 'package:sharer/data/security/hmac_signer.dart';
 import 'package:sharer/data/security/hmac_verifier.dart';
 import 'package:sharer/data/security/paired_devices_store.dart';
 import 'package:sharer/domain/entities/paired_device.dart';
 
 import '../../fakes/fake_secure_key_value_store.dart';
+
+/// Build a fake [Request] matching the shape the production server
+/// hands to the verifier (POST /upload). Tests override path/method
+/// only when they need to exercise drift cases.
+Request _fakeRequest({
+  String method = 'POST',
+  String path = '/upload',
+}) =>
+    Request(method, Uri.parse('http://localhost$path'));
 
 void main() {
   late FakeSecureKeyValueStore secure;
@@ -49,8 +59,7 @@ void main() {
     String? overrideSender,
   }) {
     return verifier.verify(
-      method: 'POST',
-      path: '/upload',
+      request: _fakeRequest(),
       senderDeviceId: overrideSender ?? peer.deviceId,
       timestamp: overrideTimestamp ?? headers.timestamp,
       nonce: overrideNonce ?? headers.nonce,
@@ -62,8 +71,7 @@ void main() {
 
   test('returns Unsigned when no signature headers are present', () async {
     final result = await verifier.verify(
-      method: 'POST',
-      path: '/upload',
+      request: _fakeRequest(),
       senderDeviceId: 'sender',
       timestamp: null,
       nonce: null,
@@ -77,8 +85,7 @@ void main() {
   test('returns Rejected when only some signature headers are present',
       () async {
     final result = await verifier.verify(
-      method: 'POST',
-      path: '/upload',
+      request: _fakeRequest(),
       senderDeviceId: 'sender',
       timestamp: '1700000000000',
       nonce: null,
@@ -87,6 +94,35 @@ void main() {
       filesize: 0,
     );
     expect(result, isA<HmacRejected>());
+  });
+
+  test('rejects when the request path does not match the signed path',
+      () async {
+    // Slice 5.x.2.4: the verifier now derives method+path from the
+    // Request itself rather than trusting caller-passed strings. A
+    // peer's `/upload` signature must not validate when replayed
+    // against a different path.
+    final peer = makePeer();
+    await paired.add(peer);
+    final headers = signer.sign(
+      psk: peer.psk,
+      method: 'POST',
+      path: '/upload',
+      senderDeviceId: peer.deviceId,
+      filename: 'foo.txt',
+      filesize: 100,
+    );
+    final result = await verifier.verify(
+      request: _fakeRequest(path: '/different-path'),
+      senderDeviceId: peer.deviceId,
+      timestamp: headers.timestamp,
+      nonce: headers.nonce,
+      signature: headers.signature,
+      filename: 'foo.txt',
+      filesize: 100,
+    );
+    expect(result, isA<HmacRejected>());
+    expect((result as HmacRejected).reason, contains('signature'));
   });
 
   test('returns Rejected for unknown sender', () async {

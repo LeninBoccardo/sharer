@@ -234,8 +234,7 @@ class HttpFileServer {
     PairedDevice? authenticatedDevice;
     if (verifier != null) {
       final outcome = await verifier.verify(
-        method: 'POST',
-        path: TransportProtocol.uploadPath,
+        request: request,
         senderDeviceId: senderId,
         timestamp: headers[TransportProtocol.headerTimestamp],
         nonce: headers[TransportProtocol.headerNonce],

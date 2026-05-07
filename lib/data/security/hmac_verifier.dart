@@ -3,6 +3,7 @@ import 'dart:developer' as developer;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shelf/shelf.dart';
 
 import '../../domain/entities/paired_device.dart';
 import '../../domain/repositories/paired_devices_repository.dart';
@@ -65,9 +66,14 @@ class HmacVerifier {
   /// store.
   PairedDevicesRepository get repository => _paired;
 
+  /// Slice 5.x.2.4: takes the [Request] directly and derives method+path
+  /// from it. Previously these were caller-passed strings — only one
+  /// caller (http_file_server.dart) used the verifier and hard-coded
+  /// `'POST'` / `TransportProtocol.uploadPath`, but the API invited a
+  /// future second caller to drift, which would let a peer's `/upload`
+  /// signature replay against a different path.
   Future<HmacVerifyResult> verify({
-    required String method,
-    required String path,
+    required Request request,
     required String? senderDeviceId,
     required String? timestamp,
     required String? nonce,
@@ -76,6 +82,8 @@ class HmacVerifier {
     required int filesize,
     String? transferId,
   }) async {
+    final method = request.method;
+    final path = request.requestedUri.path;
     final hasAny = _present(timestamp) || _present(nonce) || _present(signature);
     if (!hasAny) return const HmacUnsigned();
 
