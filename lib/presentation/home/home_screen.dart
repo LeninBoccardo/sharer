@@ -19,6 +19,7 @@ import '../share/share_pending_banner.dart';
 import '../transfers/transfers_section.dart';
 import 'battery_optimization_banner.dart';
 import 'quiet_mode_banner.dart';
+import 'web_native_app_banner.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -103,6 +104,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              const WebNativeAppBanner(),
               const QuietModeBanner(),
               const BatteryOptimizationBanner(),
               const SharePendingBanner(),

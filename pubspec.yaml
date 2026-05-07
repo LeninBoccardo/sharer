@@ -90,6 +90,12 @@ dependencies:
   # responder. mobile_scanner is camera-based; on desktops without a
   # camera we fall back to the typed-code entry.
   qr_flutter: ^4.1.0
+
+  # Slice 5.x.6: the web-only "download the native app" banner taps
+  # url_launcher to open the landing page in a new tab. Cross-platform
+  # but only used on web today; native builds carry the dep with
+  # negligible weight.
+  url_launcher: ^6.3.0
   mobile_scanner: ^7.2.0
 
   # Stable random device IDs.
