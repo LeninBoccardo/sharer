@@ -333,5 +333,52 @@ void main() {
       await pumpEventQueue();
       expect(showWindowCount, 1);
     });
+
+    test('Slice 5.x.3.8: foreground re-fire of the cold-start tap is '
+        'suppressed (some Android OEMs deliver the launch tap to the '
+        'response stream once the engine is up)', () async {
+      await router.dispose();
+      // Cold-start with the Open action firing — handled once via
+      // readLaunchDetails.
+      service.coldStartLaunch = const NotificationLaunch(
+        payload: 'transfer_done:abc|/dl/IMG.jpg',
+        actionId: NotificationActions.transferOpen,
+      );
+      router = NotificationRouter(
+        service: service,
+        inviteController: inviteController,
+        openFile: (path) async => openedPaths.add(path),
+        showMainWindow: () async {
+          showWindowCount++;
+        },
+      );
+      await router.start();
+      await pumpEventQueue();
+      expect(openedPaths, ['/dl/IMG.jpg']);
+
+      // OEM re-fires the SAME tap into the foreground response stream
+      // — must not open the file twice.
+      service.emit(const NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: NotificationActions.transferOpen,
+        payload: 'transfer_done:abc|/dl/IMG.jpg',
+      ));
+      await pumpEventQueue();
+      expect(openedPaths, ['/dl/IMG.jpg'],
+          reason: 'foreground re-fire of cold-start tap should be deduped');
+
+      // After the dedup latch clears, a LATER tap on the same
+      // notification (legitimate user re-tap) still routes.
+      service.emit(const NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: NotificationActions.transferOpen,
+        payload: 'transfer_done:abc|/dl/IMG.jpg',
+      ));
+      await pumpEventQueue();
+      expect(openedPaths, ['/dl/IMG.jpg', '/dl/IMG.jpg'],
+          reason: 'second tap after dedup latch cleared should route');
+    });
   });
 }

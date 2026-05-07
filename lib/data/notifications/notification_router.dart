@@ -56,9 +56,25 @@ class NotificationRouter {
   final ShowMainWindowFn _showMainWindow;
   StreamSubscription<NotificationResponse>? _sub;
 
+  /// Slice 5.x.3.8: cold-start dedup. Some Android OEMs re-deliver
+  /// the launch tap to onDidReceiveNotificationResponse once the
+  /// engine is up, so the same tap arrives via [readLaunchDetails]
+  /// and the foreground stream — without dedup we'd open the file
+  /// twice / show the window twice. We capture the launch tap's
+  /// (actionId, payload) and skip the first matching response that
+  /// arrives via the foreground stream, then clear the latch so a
+  /// legitimate re-tap of the same notification still routes.
+  String? _launchActionId;
+  String? _launchPayload;
+
   Future<void> start() async {
-    _sub = _service.responses.listen(_handleResponse);
+    // Read launch details BEFORE attaching the listener so the
+    // dedup latch is populated before any potential foreground
+    // re-fire from the OEM.
     final launch = await _service.readLaunchDetails();
+    _launchActionId = launch?.actionId;
+    _launchPayload = launch?.payload;
+    _sub = _service.responses.listen(_handleResponse);
     if (launch != null) {
       await _route(actionId: launch.actionId, payload: launch.payload);
       _log('handled cold-start launch');
@@ -72,6 +88,15 @@ class NotificationRouter {
   }
 
   void _handleResponse(NotificationResponse response) {
+    // Cold-start dedup latch — see _launchActionId field comment.
+    if (_launchActionId != null &&
+        response.actionId == _launchActionId &&
+        response.payload == _launchPayload) {
+      _launchActionId = null;
+      _launchPayload = null;
+      _log('skip duplicate launch tap (foreground re-fire after cold-start)');
+      return;
+    }
     unawaited(_route(
       actionId: response.actionId,
       payload: response.payload,
