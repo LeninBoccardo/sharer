@@ -19,6 +19,14 @@ void _log(String message) {
 /// gate mDNS announcements (quiet mode on unrecognized networks). The trust
 /// boundary itself is the device pairing — see docs/v1/security.md.
 class NetworkWatcherImpl implements NetworkWatcherRepository {
+  /// Slice 5.x.4.2: periodic re-sample interval. connectivity_plus only
+  /// fires on link transitions (Wi-Fi ↔ Ethernet ↔ none), not on
+  /// IP renumbering — DHCP renew on the same SSID, Hyper-V vSwitch
+  /// toggle on a wired interface, roaming to a different AP on the
+  /// same SSID — all leave a stale ipv4 if we only react to that
+  /// stream. 30 s is conservative but avoids hot-looping the OS API.
+  static const _periodicResample = Duration(seconds: 30);
+
   final NetworkSource _source;
   final TrustedNetworksStore _trusted;
 
@@ -29,20 +37,35 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
   NetworkInfo? _latest;
   late Set<String> _trustedCache;
   StreamSubscription<void>? _sub;
+  Timer? _periodicTimer;
   bool _disposed = false;
 
   NetworkWatcherImpl(this._source, this._trusted) {
     _trustedCache = _trusted.load();
     _sub = _source.connectivityChanges().listen((_) => _refresh());
+    _periodicTimer = Timer.periodic(_periodicResample, (_) => _refresh());
     // Initial sample so consumers don't have to wait for the first change.
     unawaited(_refresh());
   }
 
+  /// Slice 5.x.4.2: explicit re-sample for callers that have a
+  /// stronger signal than the periodic timer — e.g., AppLifecycleState
+  /// transitioning to resumed after a long pause.
+  Future<void> recheck() => _refresh();
+
   Future<void> _refresh() async {
     if (_disposed) return;
     final info = await _source.read();
+    final previous = _latest;
     _latest = info;
     final trusted = _evaluateTrust();
+    // Slice 5.x.4.2: only emit when something downstream consumers
+    // would actually care about changed. Avoids burning a redraw +
+    // discovery-layer re-evaluation every 30 s when nothing moved.
+    final changed = previous == null
+        ? info != null
+        : info == null || _infoDiffers(previous, info);
+    if (!changed) return;
     _log(
       info == null
           ? 'Refresh → no network'
@@ -52,6 +75,16 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
     );
     _network.add(info);
     _isTrusted.add(trusted);
+  }
+
+  /// True if any field downstream consumers can observe changed —
+  /// fingerprint (trust eval), ipv4 (server bind / discovery), ssid
+  /// or linkType (UI labels).
+  static bool _infoDiffers(NetworkInfo a, NetworkInfo b) {
+    return a.fingerprint != b.fingerprint ||
+        a.ipv4 != b.ipv4 ||
+        a.ssid != b.ssid ||
+        a.linkType != b.linkType;
   }
 
   bool _evaluateTrust() {
@@ -110,6 +143,8 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
 
   Future<void> dispose() async {
     _disposed = true;
+    _periodicTimer?.cancel();
+    _periodicTimer = null;
     await _sub?.cancel();
     await _network.close();
     await _isTrusted.close();
