@@ -44,6 +44,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.listen(pairInviteStreamProvider, (_, next) {
       next.whenData((invite) {
         if (invite.role != PairInviteRole.responder) return;
+        // Slice 5.x.3.7: prune the dedup set on terminal states so a
+        // peer that re-pairs after declined/expired/completed gets a
+        // fresh modal. Previously the id stuck around forever and any
+        // re-invite (or modal dismissed by rotation / cold-restart
+        // racing this listener) was silently suppressed.
+        if (invite.status == PairInviteStatus.declined ||
+            invite.status == PairInviteStatus.expired ||
+            invite.status == PairInviteStatus.completed) {
+          _modalShownFor.remove(invite.inviteId);
+          return;
+        }
         if (invite.status != PairInviteStatus.awaitingFingerprint) return;
         if (!_modalShownFor.add(invite.inviteId)) return;
         // Try to find the inbound peer in the discovered list so we
