@@ -60,18 +60,26 @@ dependencies:
   # HMAC-SHA256 for the X-Sharer-Sig request authentication header.
   crypto: ^3.0.6
 
+  # Slice 5.x.4.3: migrated from the EOL `cryptography` 2.x line to the
+  # community-maintained `cryptography_plus` fork. Drop-in API
+  # (AesGcm.with256bits(), Hmac, Hkdf, Ed25519, X25519, SecretBox,
+  # SecretKey all preserved). The original dint.dev / Gohilla
+  # `cryptography` 2.x went silent; the Plus fork is actively
+  # maintained and is the path most LAN-share apps moved to after
+  # hitting the same auto-registration trap we did.
+  #
   # Ed25519 long-term identity (slice 4.5), X25519 + HKDF for the LAN
   # pair-invite handshake (slice 4.6), AES-256-GCM for end-to-end chunk
-  # encryption (slice 5.3). Pure-Dart implementation gates the hot
-  # path under cryptography_flutter at boot — see slice 5.3.2 + main.dart.
-  cryptography: ^2.7.0
-  # Slice 5.3.2: native AES-GCM (javax.crypto.Cipher on Android,
-  # CommonCrypto on Apple, BCrypt on Windows). Registered at boot via
-  # FlutterCryptography.enable(); the same AesGcm.with256bits() factory
-  # in transfer_cipher.dart now hits a native implementation. Fixes the
-  # 100MB-takes-forever issue caught in slice 5.x validation — pure-
-  # Dart AES is ~5–10 MB/s, native is 100+ MB/s.
-  cryptography_flutter: ^2.3.2
+  # encryption (slice 5.3).
+  cryptography_plus: ^3.0.0
+  # Slice 5.x.4.3: native AES-GCM (javax.crypto.Cipher on Android,
+  # CommonCrypto on Apple, BCrypt on Windows). Auto-registers via
+  # Flutter plugin discovery in 3.x — there is NO longer a
+  # FlutterCryptography.enable() call to make. The boot canary in
+  # main.dart logs `AesGcm.with256bits().runtimeType` on every launch
+  # — see reference_cryptography_flutter.md for the trap that bit us
+  # in 5.3.2 and what to do if the canary shows `_DartAesGcm` again.
+  cryptography_flutter_plus: ^3.0.0
 
   # Self-signed X.509 cert generation for slice 5.1 TLS + cert pinning.
   # Wraps pointycastle's ASN.1 + key-gen primitives — much less code than

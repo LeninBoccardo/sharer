@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:cryptography/cryptography.dart';
-import 'package:cryptography_flutter/cryptography_flutter.dart';
+import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,16 +14,15 @@ import 'app/providers.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Slice 5.3.2.1: explicitly call enable() despite the deprecation.
-  // Slice 5.3.2's auto-registration didn't reliably swap in native
-  // AES on Realme RMX2202 (Android 13 / Realme UI 4) — slice 5.x.1
-  // validation showed 7.4 MB/s on a 111 MB transfer, which matches
-  // pure-Dart AES throughput (~3-5 ms/chunk × ~3500 chunks).
-  // ignore: deprecated_member_use
-  FlutterCryptography.enable();
-  // Diagnostic — log which backend is actually selected so the next
-  // validation round can confirm native is loaded. `FlutterAesGcm` =
-  // good (native); plain `_DartAesGcm` or similar = pure-Dart fallback.
+  // Slice 5.x.4.3: migrated to cryptography_plus + cryptography_flutter_plus
+  // 3.x. The 3.x line auto-registers via Flutter plugin discovery;
+  // there is NO longer a CryptographyFlutter.enable() to call. The
+  // boot canary below is now the ONLY signal that native AES is
+  // actually loaded — if it ever shows `_DartAesGcm` (or any
+  // Dart-prefixed runtime type) on Realme/ColorOS, file an issue
+  // upstream. See reference_cryptography_flutter.md for the trap
+  // that bit us in 5.3.2 and the fallback plan (direct method-channel
+  // bridge to javax.crypto).
   final aes = AesGcm.with256bits();
   debugPrint('[sharer.crypto] AES-GCM backend: ${aes.runtimeType}');
 

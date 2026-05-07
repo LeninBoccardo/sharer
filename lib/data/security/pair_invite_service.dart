@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:math';
 
-import 'package:cryptography/cryptography.dart' hide Hmac;
+import 'package:cryptography_plus/cryptography_plus.dart' hide Hmac;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';

@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:cryptography/cryptography.dart';
+import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:crypto/crypto.dart' as digest;
 
 /// Wraps the device's long-term Ed25519 keypair for identity-bearing

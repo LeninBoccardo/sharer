@@ -7,7 +7,7 @@ import Foundation
 
 import bonsoir_darwin
 import connectivity_plus
-import cryptography_flutter
+import cryptography_flutter_plus
 import device_info_plus
 import file_picker
 import flutter_local_notifications
