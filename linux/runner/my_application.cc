@@ -10,9 +10,26 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+
+  // Slice 5.x.5 phase 3 — single-instance support. When a second
+  // sharer process tries to start, GApplication's D-Bus uniqueness
+  // forwards the activation to the primary; my_application_activate
+  // sees a non-null main_window and presents it instead of creating
+  // a second window. Cleared on window destroy.
+  GtkWindow* main_window;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+// Slice 5.x.5 phase 3: forget our reference to the destroyed window
+// so a subsequent reactivation creates a fresh one. Without this, a
+// user closing-then-reopening would crash on the dead-pointer present.
+static void on_main_window_destroy(GtkWidget* widget, gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (self->main_window == GTK_WINDOW(widget)) {
+    self->main_window = nullptr;
+  }
+}
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
@@ -22,6 +39,15 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
+
+  // Slice 5.x.5 phase 3: if a primary instance already has a window,
+  // a second-process launch arrives here as a re-activation. Bring
+  // the existing window forward instead of creating a duplicate.
+  if (self->main_window != nullptr) {
+    gtk_window_present(self->main_window);
+    return;
+  }
+
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
@@ -76,6 +102,12 @@ static void my_application_activate(GApplication* application) {
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
+
+  // Slice 5.x.5 phase 3: remember this window so a second-process
+  // launch bumps the existing window forward (see top of file).
+  self->main_window = window;
+  g_signal_connect(window, "destroy", G_CALLBACK(on_main_window_destroy),
+                   self);
 }
 
 // Implements GApplication::local_command_line.
@@ -142,7 +174,12 @@ MyApplication* my_application_new() {
   // the application to be recognized beyond its binary name.
   g_set_prgname(APPLICATION_ID);
 
+  // Slice 5.x.5 phase 3: drop G_APPLICATION_NON_UNIQUE so GApplication's
+  // built-in D-Bus uniqueness kicks in. A second sharer process will
+  // exit immediately after forwarding its activation to the primary
+  // (which presents its existing window — see my_application_activate).
+  // Equivalent to the Windows mutex from slice 5.x.3.4.
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",
-                                     G_APPLICATION_NON_UNIQUE, nullptr));
+                                     G_APPLICATION_FLAGS_NONE, nullptr));
 }
