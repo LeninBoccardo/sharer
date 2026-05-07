@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
+
 import '../../data/share/incoming_share_service.dart';
 
 /// State held by [PendingSharesController]. Empty when no share is
@@ -50,6 +52,35 @@ class PendingSharesController {
         List.unmodifiable([..._state.files, ...batch]),
       ));
     });
+    // Slice 5.x.3.6: best-effort sweep of cacheDir/share_* files older
+    // than 24h. clear() only deletes paths in current state, so a
+    // share that was consumed via consumeInitial then dropped before
+    // the user picked a peer (app backgrounded, killed, etc.) leaks.
+    // The OS reclaims under pressure but a 4 GB shared video can sit
+    // for weeks. Don't await — fire and forget so startup isn't
+    // blocked by stat calls.
+    if (Platform.isAndroid) {
+      unawaited(_sweepStaleShareCache());
+    }
+  }
+
+  Future<void> _sweepStaleShareCache() async {
+    try {
+      final dir = await getTemporaryDirectory();
+      if (!await dir.exists()) return;
+      final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = entity.uri.pathSegments.last;
+        if (!name.startsWith('share_')) continue;
+        try {
+          final stat = await entity.stat();
+          if (stat.modified.isBefore(cutoff)) {
+            await entity.delete();
+          }
+        } catch (_) {/* one bad file shouldn't abort the sweep */}
+      }
+    } catch (_) {/* never fail startup for opportunistic cleanup */}
   }
 
   /// Called after the home screen has handed the files off to a
