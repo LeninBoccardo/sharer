@@ -149,6 +149,12 @@ dev_dependencies:
 
   mocktail: ^1.0.4
 
+  # Slice 5.x.5 phase 2: macOS / Linux config validation tests parse
+  # Info.plist + entitlements as XML. Already a transitive dep
+  # (basic_utils → asn1lib → xml); declaring it here just lets the
+  # test files import it directly.
+  xml: ^6.6.0
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
