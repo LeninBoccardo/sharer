@@ -22,6 +22,24 @@ import '../storage/downloads_locator.dart';
 import 'incoming_event.dart';
 import 'transport_protocol.dart';
 
+/// Slice 5.x.2.5: regex matching every Unicode bidi-formatting control
+/// (UAX #9: LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI, ALM)
+/// — the codepoints that let a malicious filename render with a
+/// flipped extension in Explorer / Finder while keeping the real
+/// `.exe` on disk.
+///
+/// Built from numeric codepoints (not literal characters) so this
+/// source file itself stays pure ASCII; the linter rightly flags any
+/// literal bidi control in source as a code-review hazard.
+final RegExp _bidiControlsPattern = RegExp(String.fromCharCodes(<int>[
+  0x5B, // [
+  0x200E, 0x200F, // LRM, RLM
+  0x202A, 0x2D, 0x202E, // LRE through RLO (range)
+  0x2066, 0x2D, 0x2069, // LRI through PDI (range)
+  0x061C, // ALM
+  0x5D, // ]
+]));
+
 /// Receiving side of the file-transfer transport. shelf-based HTTPS
 /// server (slice 5.1) — bound once on [start], stays bound through
 /// trust transitions for the lifetime of the app so paired peers can
@@ -688,12 +706,34 @@ class HttpFileServer {
     return addr.address;
   }
 
-  /// Strip path separators and parent-directory traversal so a
-  /// malicious sender can't write outside the downloads dir.
+  /// Strip path separators, parent-directory traversal, ASCII control
+  /// bytes, and Unicode bidi-formatting marks so a malicious sender
+  /// can't (a) escape the downloads dir or (b) spoof a filename's
+  /// rendered extension via right-to-left override.
+  ///
+  /// Slice 5.x.2.5: prior version dropped `\` `/` `..` only. A name
+  /// containing U+202E (right-to-left override) renders as
+  /// `reportexe.jpg` in Explorer / Finder, but the on-disk extension
+  /// stays `.exe` — classic phishing surface on Windows. NUL /
+  /// 0x00-0x1F also break filesystem APIs on most platforms (or worse
+  /// — silently truncate at the NUL on POSIX paths handed to native
+  /// code).
   static String _sanitizeFileName(String name) {
     var s = name.replaceAll(RegExp(r'[\\/]'), '_');
+    // ASCII control chars (NUL through US, plus DEL).
+    s = s.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '');
+    // Unicode bidi controls: LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI,
+    // RLI, FSI, PDI, ALM. The full set of "directional formatting
+    // characters" per Unicode UAX #9. Escape-sequenced rather than
+    // literal so this source file itself can be read safely.
+    s = s.replaceAll(_bidiControlsPattern, '');
     s = s.replaceAll('..', '_');
     s = s.trim();
+    // Windows refuses filenames that end in `.` or space — strip
+    // trailing instances after the other transforms have settled.
+    while (s.isNotEmpty && (s.endsWith('.') || s.endsWith(' '))) {
+      s = s.substring(0, s.length - 1);
+    }
     if (s.isEmpty) s = 'file';
     return s;
   }
