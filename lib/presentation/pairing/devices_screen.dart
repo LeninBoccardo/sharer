@@ -157,7 +157,20 @@ class _PairedList extends ConsumerWidget {
     // get — there is no UI on this side asking "should we tell them?".
     final messenger = ScaffoldMessenger.of(context);
     final forget = ref.read(forgetServiceProvider);
-    await forget.forgetPeer(d);
+    try {
+      await forget.forgetPeer(d);
+    } catch (_) {
+      // Audit #19: local removal can fail (e.g. a secure-storage write
+      // error). The peer-notify POST is fire-and-forget inside forgetPeer
+      // and never throws here, so a throw means we did NOT drop the pair
+      // locally — tell the user instead of escaping as an unhandled async
+      // error and silently dropping the success toast.
+      messenger.showSnackBar(SnackBar(
+        content: Text("Couldn't forget ${d.displayName} — try again"),
+        duration: const Duration(seconds: 3),
+      ));
+      return;
+    }
     messenger.showSnackBar(SnackBar(
       content: Text('Forgot ${d.displayName}'),
       duration: const Duration(seconds: 3),
