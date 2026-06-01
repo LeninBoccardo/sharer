@@ -59,6 +59,18 @@ Future<void> main() async {
     // on non-Android platforms.
     FlutterForegroundTask.initCommunicationPort();
 
+    // Prewarm mDNS discovery before the first frame. peerDiscoveryProvider
+    // has side effects (observe() + broadcast()) that only run when the
+    // provider is first read, and the sole other reader is HomeScreen.build
+    // — so without this, the slowest, most latency-sensitive part of the
+    // share flow doesn't even begin until after the widget tree builds,
+    // serialized behind the first frame. Principle #1 (speed is the #1
+    // feature) makes cold-start discovery part of the share-path budget;
+    // start it concurrently with the rest of boot. start() is trust-gated
+    // and idempotent, so HomeScreen's later watch just attaches to the
+    // already-running stream.
+    container.read(peerDiscoveryProvider);
+
     // Slice 5.2.1: pre-init notifications + warm up the coordinator
     // before the first frame so an inbound transfer/invite that lands in
     // the same second the app boots already has a listener attached.
