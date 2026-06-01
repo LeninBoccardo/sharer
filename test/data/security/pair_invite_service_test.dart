@@ -565,6 +565,69 @@ void main() {
     await sub.cancel();
   });
 
+  test('replayed /pair-invite (same nonce) is rejected after the pending '
+      'entry is gone (audit #14)', () async {
+    // Capture the original signed invite body.
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
+    final accepted = await b.acceptInvite(
+      inviteId: payload.inviteId,
+      initiatorId: payload.initiatorId,
+      initiatorName: payload.initiatorName,
+      initiatorPublicKey: payload.initiatorPublicKey,
+      initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
+      nonce: payload.nonce,
+      signature: payload.signature,
+      expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
+    );
+    expect(accepted, isA<PairInviteAccepted>());
+    final ok = accepted as PairInviteAccepted;
+
+    // Complete on A (so it holds the PSK), then A declines; the decline
+    // POST removes B's pending entry WITHOUT arming B's decline cooldown
+    // (recordRemoteFinalize 'decline' does not touch _declinedAt), so the
+    // re-accept below reaches the replay guard rather than the cooldown.
+    await a.completeInvite(
+      inviteId: payload.inviteId,
+      responderId: ok.responderId,
+      responderName: ok.responderName,
+      responderPublicKey: ok.responderPublicKey,
+      responderEphemeralPublicKey: ok.responderEphemeralPublicKey,
+      responderCertFingerprintSha256: ok.responderCertFingerprintSha256,
+      signature: ok.signature,
+    );
+    final aDecline = await a.markLocalDeclined(payload.inviteId);
+    expect(aDecline, isNotNull);
+    final landed = await b.recordRemoteFinalize(
+      inviteId: payload.inviteId,
+      senderId: idA.id,
+      verdict: 'decline',
+      signatureBase64: aDecline!.signatureBase64,
+    );
+    expect(landed, isA<PairFinalizeRecorded>());
+
+    // Replay the captured body — same nonce. Pending is gone but the nonce
+    // was consumed, so it must be rejected (no new fingerprint modal).
+    final replay = await b.acceptInvite(
+      inviteId: payload.inviteId,
+      initiatorId: payload.initiatorId,
+      initiatorName: payload.initiatorName,
+      initiatorPublicKey: payload.initiatorPublicKey,
+      initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
+      nonce: payload.nonce,
+      signature: payload.signature,
+      expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
+    );
+    expect(replay, isA<PairInviteRejected>(),
+        reason: 'a consumed invite nonce must not be replayable');
+  });
+
   test('createInvite payload signature verifies under the initiator\'s '
       'long-term key', () async {
     final payload = await a.createInvite(

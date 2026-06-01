@@ -32,6 +32,13 @@ const Duration _defaultInviteTtl = Duration(minutes: 5);
 /// wipes it, which is acceptable.
 const Duration _defaultDeclineCooldown = Duration(hours: 1);
 
+/// Audit #14: how long a consumed /pair-invite nonce is remembered past
+/// the invite's TTL before it can be purged. A captured invite body only
+/// verifies while its own `expiresAt` is in the future, so retaining the
+/// nonce for `invite TTL + this skew` covers the whole window a replay
+/// could be accepted. Mirrors HmacVerifier's nonce buffer.
+const Duration _seenNonceSkew = Duration(seconds: 30);
+
 // ---- Result sealed types -----------------------------------------------
 
 /// Outcome of POST /pair-invite, surfaced to the HTTP handler so it can
@@ -238,6 +245,16 @@ class PairInviteService {
   final Map<String, _Pending> _pending = {};
   final Map<String, _InitiatorAwaitingResponse> _awaitingResponse = {};
   final Map<String, DateTime> _declinedAt = {};
+
+  /// Audit #14: nonces of /pair-invite bodies this responder has already
+  /// accepted, keyed `initiatorId|hex(nonce)` valued with the consume
+  /// time. A replayed (captured) invite body — same nonce, still-valid
+  /// `expiresAt`, unchanged signature — would otherwise re-verify and
+  /// re-raise the fingerprint modal after the original pending entry is
+  /// gone (declined / expired / committed). Recorded only after the
+  /// Ed25519 sig verifies, so an unauthenticated peer cannot poison it;
+  /// purged in _purgeExpired() once past the invite TTL + skew.
+  final Map<String, DateTime> _seenInviteNonces = {};
 
   final _invites = StreamController<PairInvite>.broadcast();
   late final Timer _expirySweep;
@@ -473,6 +490,19 @@ class PairInviteService {
       _log('acceptInvite reject: signature mismatch id=$inviteId');
       return PairInviteRejected('bad signature');
     }
+
+    // Audit #14: replay guard. The signature is valid, but a captured
+    // invite body re-POSTed after the original pending entry is gone would
+    // still verify (same nonce + expiresAt) and re-raise the fingerprint
+    // modal. Reject any nonce we have already consumed for this initiator.
+    // Recorded only here — past the sig check — so an unauthenticated peer
+    // cannot poison the buffer with chosen keys.
+    final nonceKey = '$initiatorId|${_hex(nonce)}';
+    if (_seenInviteNonces.containsKey(nonceKey)) {
+      _log('acceptInvite reject: nonce replay id=$inviteId from=$initiatorId');
+      return PairInviteRejected('replay');
+    }
+    _seenInviteNonces[nonceKey] = _now();
 
     final myEphemeral = await EphemeralX25519KeyPair.generate();
     final psk = await derivePairPsk(
@@ -774,6 +804,12 @@ class PairInviteService {
     if (_mailbox != null && (expiredPending.isNotEmpty || _pending.isEmpty)) {
       unawaited(_mailbox.purgeExpired(n));
     }
+
+    // Audit #14: age out consumed invite nonces once no replay of the
+    // corresponding body could still verify (its `expiresAt` is past).
+    // Retain for the invite TTL + skew measured from consume time.
+    final nonceCutoff = n.subtract(_inviteTtl + _seenNonceSkew);
+    _seenInviteNonces.removeWhere((_, when) => when.isBefore(nonceCutoff));
   }
 
   PairInvite _toInvite(_Pending p, PairInviteStatus status) => PairInvite(
