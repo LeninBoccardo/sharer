@@ -49,7 +49,7 @@ typedef _SignedFixture = ({
   PairedDevice peer,
 });
 
-Future<_SignedFixture> _setupSigned({int seed = 7}) async {
+Future<_SignedFixture> _setupSigned({int seed = 7, int? maxTransferBytes}) async {
   final dir = Directory.systemTemp.createTempSync('sharer_server_test_');
   final trust = StreamController<bool>.broadcast();
   final paired = PairedDevicesStore(FakeSecureKeyValueStore());
@@ -66,6 +66,8 @@ Future<_SignedFixture> _setupSigned({int seed = 7}) async {
     isTrusted: trust.stream,
     verifier: HmacVerifier(paired),
     port: 0,
+    maxTransferBytes:
+        maxTransferBytes ?? HttpFileServer.defaultMaxTransferBytes,
   );
   return (
     server: server,
@@ -480,6 +482,61 @@ void main() {
       expect(escaped.existsSync(), isFalse,
           reason: 'should not have written outside the downloads dir');
       expect(f.dir.listSync(), isNotEmpty);
+    });
+
+    test('aborts an /upload exceeding the per-transfer ceiling with 507 '
+        '(audit #25)', () async {
+      final f = await _setupSigned(maxTransferBytes: 8);
+      addTearDown(() async {
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
+      });
+
+      final events = <IncomingEvent>[];
+      final eventsSub = f.server.events.listen(events.add);
+
+      await f.server.start();
+      f.trust.add(true);
+      await _settle();
+
+      // 64 plaintext bytes, far over the 8-byte ceiling.
+      final body = utf8.encode('A' * 64);
+      int? status;
+      try {
+        final resp = await _postSignedUpload(
+          port: f.server.boundPort!,
+          signer: f.signer,
+          signWithPsk: f.peer.psk,
+          encryptWithPsk: f.peer.psk,
+          senderId: f.peer.deviceId,
+          senderName: f.peer.displayName,
+          fileName: 'big.bin',
+          body: body,
+        );
+        status = resp.statusCode;
+        if (status == 507) {
+          expect(resp.headers.value(TransportProtocol.headerReason),
+              TransportProtocol.reasonStorageFull);
+        }
+        await resp.drain<void>();
+      } on SocketException {
+        // A mid-stream abort can reset the connection — also a refusal.
+      } on HttpException {
+        // likewise
+      }
+      await _settle();
+
+      if (status != null) {
+        expect(status, 507, reason: 'capacity abort returns 507');
+      }
+      expect(f.dir.listSync().whereType<File>(), isEmpty,
+          reason: 'partial file deleted on capacity abort');
+      expect(events.whereType<IncomingFailed>(), isNotEmpty,
+          reason: 'capacity abort emits IncomingFailed');
+
+      await eventsSub.cancel();
     });
 
     test('sanitizes Windows-illegal chars + reserved device names (audit #24)',

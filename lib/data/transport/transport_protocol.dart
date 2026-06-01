@@ -128,4 +128,13 @@ abstract final class TransportProtocol {
   /// Value of [headerReason] meaning "the senderDeviceId is not in my
   /// paired store" — the peer forgot us. Paired with HTTP 403.
   static const String reasonUnknownSender = 'unknown-sender';
+
+  /// Audit #25: value of [headerReason] meaning the receiver aborted an
+  /// in-flight `/upload` because the bytes written reached the receiver's
+  /// per-transfer capacity ceiling (a guard against a paired-but-malicious
+  /// peer streaming an unbounded body to fill the disk). Paired with HTTP
+  /// 507 (Insufficient Storage). This is a resource/capacity rejection,
+  /// NOT an authorization one — it must never drive the reactive-forget
+  /// path (that is gated on 403 + [reasonUnknownSender]).
+  static const String reasonStorageFull = 'storage-full';
 }

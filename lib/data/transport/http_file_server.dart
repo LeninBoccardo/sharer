@@ -70,7 +70,29 @@ class HttpFileServer {
   /// via request.read() and is never read into memory.
   static const _maxJsonBodyBytes = 64 * 1024;
 
+  /// Audit #25: generous absolute per-transfer write ceiling. The product
+  /// principle is any-file/any-size with NO hard cap on legit transfers,
+  /// and dart:io has no portable free-disk-space query ([FileStat] carries
+  /// no free-space field). So instead of a true free-space check we
+  /// enforce a ceiling set far above any realistic transfer purely to stop
+  /// a paired-but-malicious peer from streaming an unbounded body straight
+  /// to disk and filling the volume. A legitimate sender never approaches
+  /// it; an abusive one is cut off with a 507.
+  ///
+  /// LIMITATION: an absolute ceiling, not free-space awareness — it does
+  /// NOT protect a device whose disk is already nearly full when a
+  /// sub-ceiling transfer arrives. A future platform channel (Android
+  /// StatFs, Win32 GetDiskFreeSpaceEx, POSIX statvfs) can compute a
+  /// per-call floor; [maxTransferBytes] is injectable so that override is
+  /// a drop-in with no change to the receive loop.
+  static const int defaultMaxTransferBytes = 512 * 1024 * 1024 * 1024;
+
   final DownloadsLocator _downloads;
+
+  /// Audit #25: effective per-transfer write ceiling for this server.
+  /// Defaults to [defaultMaxTransferBytes]; injectable for tests and a
+  /// future free-space-aware composition root.
+  final int _maxTransferBytes;
   final Stream<bool> _isTrusted;
   final HmacVerifier? _verifier;
   final PairingService? _pairing;
@@ -115,6 +137,7 @@ class HttpFileServer {
     ForgetService? forget,
     Future<TlsKeyMaterial>? tlsMaterial,
     int port = TransportProtocol.defaultPort,
+    int maxTransferBytes = defaultMaxTransferBytes,
     Uuid? uuid,
   })  : _downloads = downloads,
         _isTrusted = isTrusted,
@@ -125,6 +148,7 @@ class HttpFileServer {
         _forget = forget,
         _tlsFuture = tlsMaterial,
         _port = port,
+        _maxTransferBytes = maxTransferBytes,
         _uuid = uuid ?? const Uuid();
 
   Stream<IncomingEvent> get events => _events.stream;
@@ -360,8 +384,43 @@ class HttpFileServer {
           ? request.read()
           : cipher.decrypt(request.read());
       await for (final chunk in body) {
-        sink.add(chunk);
         bytesReceived += chunk.length;
+        // Audit #25: abort before writing a chunk that would push the
+        // file past the per-transfer capacity ceiling. Checked on the
+        // post-increment running total (decrypted/plaintext bytes that
+        // actually hit disk), so a sender that lies about or omits the
+        // declared filesize header still can't fill the volume. Close +
+        // delete the partial, drain the rest of the body so the socket
+        // closes cleanly, and answer 507 with a coarse reason so the
+        // sender shows "out of space", not a generic failure — and so it
+        // does NOT trip the reactive-forget path (403 + unknown-sender).
+        if (bytesReceived > _maxTransferBytes) {
+          _log('Receive abort id=$id from $senderName ($senderId): '
+              'exceeded capacity ceiling $_maxTransferBytes bytes');
+          await sink.close();
+          try {
+            if (await destFile.exists()) await destFile.delete();
+          } catch (_) {}
+          _events.add(IncomingFailed(
+            id: id,
+            error: 'transfer exceeded capacity ceiling '
+                '($_maxTransferBytes bytes)',
+          ));
+          // Guarded drain: draining a decrypt stream after an abort can
+          // throw on malformed remainder; a bare throw here would escape
+          // and mask the 507 with a 500.
+          try {
+            await body.drain<void>();
+          } catch (_) {}
+          return Response(
+            507,
+            headers: {
+              TransportProtocol.headerReason:
+                  TransportProtocol.reasonStorageFull,
+            },
+          );
+        }
+        sink.add(chunk);
         if (bytesReceived - lastEmittedBytes >= _progressThresholdBytes) {
           _events.add(IncomingProgress(id: id, bytesReceived: bytesReceived));
           lastEmittedBytes = bytesReceived;
