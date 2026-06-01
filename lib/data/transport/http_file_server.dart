@@ -62,6 +62,14 @@ class HttpFileServer {
   /// reasonable on large transfers.
   static const _progressThresholdBytes = 256 * 1024;
 
+  /// Audit #8: hard cap on the in-RAM body size for the three small JSON
+  /// endpoints (/peer-forgot-you, /pair-invite, /pair-finalize). Their
+  /// real payloads are well under ~2 KB; 64 KB is a generous ceiling
+  /// that still makes a pre-auth OOM flood impossible. Does NOT apply to
+  /// /upload — that streams arbitrarily large bodies straight to disk
+  /// via request.read() and is never read into memory.
+  static const _maxJsonBodyBytes = 64 * 1024;
+
   final DownloadsLocator _downloads;
   final Stream<bool> _isTrusted;
   final HmacVerifier? _verifier;
@@ -389,7 +397,11 @@ class HttpFileServer {
       return Response.notFound('');
     }
     final invite = _invite!;
-    final raw = await request.readAsString();
+    final raw = await _readBodyCapped(request, _maxJsonBodyBytes);
+    if (raw == null) {
+      _log('pair-invite reject: body exceeds $_maxJsonBodyBytes bytes');
+      return Response(413);
+    }
     Map<String, dynamic> j;
     try {
       j = jsonDecode(raw) as Map<String, dynamic>;
@@ -485,7 +497,11 @@ class HttpFileServer {
       return Response.notFound('');
     }
     final invite = _invite!;
-    final raw = await request.readAsString();
+    final raw = await _readBodyCapped(request, _maxJsonBodyBytes);
+    if (raw == null) {
+      _log('pair-finalize reject: body exceeds $_maxJsonBodyBytes bytes');
+      return Response(413);
+    }
     Map<String, dynamic> j;
     try {
       j = jsonDecode(raw) as Map<String, dynamic>;
@@ -609,7 +625,11 @@ class HttpFileServer {
   ///   - HMAC ok        → 200 + remove the local PairedDevice + emit
   ///                       a [ForgetEvent] so the UI can surface a toast
   Future<Response> _handlePeerForgotYou(Request request) async {
-    final raw = await request.readAsString();
+    final raw = await _readBodyCapped(request, _maxJsonBodyBytes);
+    if (raw == null) {
+      _log('peer-forgot-you reject: body exceeds $_maxJsonBodyBytes bytes');
+      return Response(413);
+    }
     Map<String, dynamic> j;
     try {
       j = jsonDecode(raw) as Map<String, dynamic>;
@@ -659,6 +679,34 @@ class HttpFileServer {
     _log('peer-forgot-you accepted from ${paired.deviceId} '
         '(${paired.displayName})');
     return Response.ok('');
+  }
+
+  /// Audit #8: read a request body into a String but refuse to buffer —
+  /// or even read — more than [maxBytes]. Returns the decoded string, or
+  /// `null` when the body is too large (caller should answer 413).
+  ///
+  /// Two independent guards, both rejecting EARLY (we never read a whole
+  /// oversized body just to discard it — that would itself be a DoS):
+  ///   1. Declared length — when `request.contentLength` is present and
+  ///      already over the cap, bail without reading a byte.
+  ///   2. Actual stream — a chunked request can omit or forge
+  ///      contentLength, so we tally bytes as they arrive and return the
+  ///      moment the running total would pass the cap. Returning from the
+  ///      `await for` cancels the body subscription, so we stop reading.
+  ///
+  /// Rejecting mid-stream means an oversized sender may see a connection
+  /// reset rather than a clean 413 — acceptable for an abusive/oversized
+  /// request, and far better than reading gigabytes into the process.
+  /// Decoding mirrors shelf's [Request.readAsString] default (UTF-8).
+  static Future<String?> _readBodyCapped(Request request, int maxBytes) async {
+    final declared = request.contentLength;
+    if (declared != null && declared > maxBytes) return null;
+    final bytes = <int>[];
+    await for (final chunk in request.read()) {
+      if (bytes.length + chunk.length > maxBytes) return null;
+      bytes.addAll(chunk);
+    }
+    return utf8.decode(bytes);
   }
 
   /// Caches the inbound request's source IP onto [device] in

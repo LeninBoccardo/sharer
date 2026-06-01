@@ -57,6 +57,40 @@ Future<HttpClientResponse> _postPeerForgotYou({
   }
 }
 
+/// Posts [body] to /peer-forgot-you and asserts the server REFUSED an
+/// oversized body. Rejecting mid-stream can surface to the client as
+/// either a 413 response or a connection reset (the server stops reading
+/// and responds/closes early) — both are valid refusals. The caller
+/// additionally asserts the security contract (no state change).
+Future<void> _expectOversizedRefused(
+  int port,
+  List<int> body, {
+  required bool chunked,
+}) async {
+  final client = HttpClient();
+  try {
+    final req = await client.postUrl(Uri.parse(
+        'http://127.0.0.1:$port${TransportProtocol.peerForgotYouPath}'));
+    if (chunked) {
+      req.headers.chunkedTransferEncoding = true; // no content-length
+    } else {
+      req.headers.contentLength = body.length; // honest, over the cap
+    }
+    req.headers.contentType = ContentType.json;
+    req.add(body);
+    final resp = await req.close();
+    expect(resp.statusCode, HttpStatus.requestEntityTooLarge,
+        reason: 'if the server responded at all, it must be 413');
+    await resp.drain<void>();
+  } on SocketException {
+    // Server reset the connection mid-write — a valid refusal.
+  } on HttpException {
+    // e.g. "Connection closed before full header" — also a refusal.
+  } finally {
+    client.close();
+  }
+}
+
 Future<HttpClientResponse> _postSignedUpload({
   required int port,
   required HmacSigner signer,
@@ -264,6 +298,32 @@ void main() {
       } finally {
         client.close();
       }
+    });
+
+    test('an oversized body (declared content-length) is refused without '
+        'touching the pair (audit #8 declared-length guard)', () async {
+      // > 64 KB cap; must be refused before any decode/HMAC/state work.
+      final big = jsonEncode({
+        'senderId': peer.deviceId,
+        'signature': 'A' * (200 * 1024),
+      });
+      await _expectOversizedRefused(
+        server.boundPort!,
+        utf8.encode(big),
+        chunked: false,
+      );
+      await _settle();
+      expect(await paired.get(peer.deviceId), isNotNull,
+          reason: 'oversized body must not mutate state');
+    });
+
+    test('an oversized chunked body (no content-length) is refused '
+        '(audit #8 stream guard)', () async {
+      // 128 KB across chunks, no content-length to lean on.
+      final body = utf8.encode('B' * (128 * 1024));
+      await _expectOversizedRefused(server.boundPort!, body, chunked: true);
+      await _settle();
+      expect(await paired.get(peer.deviceId), isNotNull);
     });
 
     test('a successful POST also wipes any cached entry — the peer is '
