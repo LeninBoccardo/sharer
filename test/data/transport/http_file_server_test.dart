@@ -495,6 +495,50 @@ void main() {
       expect(f.dir.listSync(), isNotEmpty);
     });
 
+    test('rejects a signed upload whose received length != signed '
+        'totalBytes (truncation, audit #13)', () async {
+      final f = await _setupSigned();
+      addTearDown(() async {
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
+      });
+
+      final events = <IncomingEvent>[];
+      final eventsSub = f.server.events.listen(events.add);
+
+      await f.server.start();
+      f.trust.add(true);
+      await _settle();
+
+      // Sign/declare 1000 plaintext bytes but ship only 64 valid encrypted
+      // bytes — every delivered GCM frame verifies, so only the signed
+      // length check catches the truncation.
+      final body = utf8.encode('A' * 64);
+      final resp = await _postSignedUpload(
+        port: f.server.boundPort!,
+        signer: f.signer,
+        signWithPsk: f.peer.psk,
+        encryptWithPsk: f.peer.psk,
+        senderId: f.peer.deviceId,
+        senderName: f.peer.displayName,
+        fileName: 'short.bin',
+        body: body,
+        declaredSize: 1000,
+      );
+      expect(resp.statusCode, HttpStatus.internalServerError);
+      await resp.drain<void>();
+      await _settle();
+
+      expect(f.dir.listSync().whereType<File>(), isEmpty,
+          reason: 'truncated transfer leaves no partial file');
+      expect(events.last, isA<IncomingFailed>(),
+          reason: 'truncated transfer ends in failure, not completion');
+
+      await eventsSub.cancel();
+    });
+
     test('aborts an /upload that grossly overruns its declared size with '
         '413 (audit #10)', () async {
       final f = await _setupSigned(uploadOverSizeSlack: 0);

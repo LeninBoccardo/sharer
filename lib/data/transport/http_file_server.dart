@@ -457,6 +457,23 @@ class HttpFileServer {
           lastEmittedBytes = bytesReceived;
         }
       }
+      // Audit #13: the per-chunk GCM tags catch tampering and mid-frame
+      // truncation, but a stream that ends on a clean frame boundary
+      // (network drop or in-path truncation) decrypts to a
+      // truncated-but-individually-valid payload that would otherwise be
+      // reported as a completed download. totalBytes (X-Sharer-FileSize)
+      // is bound into the signed HMAC canonical, so on an authenticated
+      // request it is the trusted expected length: reject and let the
+      // catch delete the partial when the received count doesn't match.
+      // Strict != also fails an over-long stream (folds in #10's case).
+      // Skipped for the unsigned/null-verifier test-convenience path,
+      // which has no signed length to enforce.
+      if (authenticatedDevice != null && bytesReceived != totalBytes) {
+        throw FormatException(
+          'transfer length mismatch: expected $totalBytes bytes, '
+          'received $bytesReceived',
+        );
+      }
       await sink.flush();
       await sink.close();
       // Slice 5.3.1: on Android, [destFile] is in a private staging
