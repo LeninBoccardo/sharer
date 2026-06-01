@@ -27,12 +27,33 @@ class HmacUnsigned extends HmacVerifyResult {
   const HmacUnsigned();
 }
 
-/// Headers were present but did not validate. Always reject. [reason] is
+/// Why an [HmacRejected] fired. The server maps these to distinct wire
+/// responses: [unknownSender] means "the peer is not in our paired
+/// store" — i.e. they don't recognize our identity/PSK — and is the
+/// ONLY reason that should trigger the reactive-forget path on the
+/// sender. Every [transient] reason (clock skew, nonce replay,
+/// malformed/partial headers, signature mismatch from a *known* peer)
+/// is a recoverable signing failure and must NOT unpair anyone.
+enum HmacRejectionReason {
+  /// The senderDeviceId has no matching PairedDevice. The peer forgot
+  /// us (or never knew us). Server returns 403 + X-Sharer-Reason.
+  unknownSender,
+
+  /// Any recoverable signing failure: partial headers, malformed
+  /// timestamp, timestamp out of window, nonce replay, malformed
+  /// signature, or signature mismatch against a known peer's PSK.
+  /// Server returns a bare 401.
+  transient,
+}
+
+/// Headers were present but did not validate. Always reject. [detail] is
 /// for logs only; do not echo it to the wire (the spec says don't leak
-/// which check failed).
+/// which check failed). [reason] is the coarse category the server uses
+/// to pick the wire response.
 class HmacRejected extends HmacVerifyResult {
-  final String reason;
-  const HmacRejected(this.reason);
+  final String detail;
+  final HmacRejectionReason reason;
+  const HmacRejected(this.detail, this.reason);
 }
 
 /// Server-side validator for the X-Sharer-Sig family of headers.
@@ -91,23 +112,29 @@ class HmacVerifier {
         !_present(timestamp) ||
         !_present(nonce) ||
         !_present(signature)) {
-      return _reject('partial signature headers');
+      return _reject('partial signature headers', HmacRejectionReason.transient);
     }
 
     final device = await _paired.get(senderDeviceId!);
-    if (device == null) return _reject('unknown sender $senderDeviceId');
+    if (device == null) {
+      return _reject('unknown sender $senderDeviceId',
+          HmacRejectionReason.unknownSender);
+    }
 
     final ts = int.tryParse(timestamp!);
-    if (ts == null) return _reject('malformed timestamp');
+    if (ts == null) {
+      return _reject('malformed timestamp', HmacRejectionReason.transient);
+    }
     final ageMs = _now().toUtc().millisecondsSinceEpoch - ts;
     if (ageMs.abs() > _clockSkew.inMilliseconds) {
-      return _reject('timestamp out of window (age=${ageMs}ms)');
+      return _reject('timestamp out of window (age=${ageMs}ms)',
+          HmacRejectionReason.transient);
     }
 
     _purgeOldNonces();
     final replayKey = '$senderDeviceId|$nonce';
     if (_seenNonces.containsKey(replayKey)) {
-      return _reject('nonce replay');
+      return _reject('nonce replay', HmacRejectionReason.transient);
     }
 
     final canonical = canonicalString(
@@ -122,9 +149,11 @@ class HmacVerifier {
     );
     final expected = Hmac(sha256, device.psk).convert(utf8.encode(canonical));
     final provided = _safeBase64Decode(signature!);
-    if (provided == null) return _reject('malformed signature');
+    if (provided == null) {
+      return _reject('malformed signature', HmacRejectionReason.transient);
+    }
     if (!_constantTimeEquals(expected.bytes, provided)) {
-      return _reject('signature mismatch');
+      return _reject('signature mismatch', HmacRejectionReason.transient);
     }
 
     _seenNonces[replayKey] = _now();
@@ -133,10 +162,10 @@ class HmacVerifier {
 
   static bool _present(String? s) => s != null && s.isNotEmpty;
 
-  HmacRejected _reject(String reason) {
-    developer.log('reject: $reason', name: _logName);
-    debugPrint('[$_logName] reject: $reason');
-    return HmacRejected(reason);
+  HmacRejected _reject(String detail, HmacRejectionReason reason) {
+    developer.log('reject: $detail', name: _logName);
+    debugPrint('[$_logName] reject: $detail');
+    return HmacRejected(detail, reason);
   }
 
   void _purgeOldNonces() {

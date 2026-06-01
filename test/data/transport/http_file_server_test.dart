@@ -473,10 +473,12 @@ void main() {
       await response.drain<void>();
     });
 
-    test('rejects with 401 when signed by a non-paired sender', () async {
+    test('rejects with 403 + unknown-sender when signed by a non-paired '
+        'sender', () async {
       // Verifier knows nobody — request is rejected at the HMAC gate
-      // before the body is read, so the body shape (plaintext or not)
-      // doesn't matter.
+      // before the body is read. Audit #1: an unknown sender is the one
+      // rejection that means "you forgot me", so it returns a distinct
+      // 403 + X-Sharer-Reason so the sender can reactively forget.
       final s = _setup(verifier: verifier);
       addTearDown(() async {
         await s.server.dispose();
@@ -498,7 +500,9 @@ void main() {
         fileName: 'note.txt',
         body: body,
       );
-      expect(response.statusCode, HttpStatus.unauthorized);
+      expect(response.statusCode, HttpStatus.forbidden);
+      expect(response.headers.value(TransportProtocol.headerReason),
+          TransportProtocol.reasonUnknownSender);
       await response.drain<void>();
     });
 

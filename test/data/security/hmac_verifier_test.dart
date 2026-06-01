@@ -122,7 +122,7 @@ void main() {
       filesize: 100,
     );
     expect(result, isA<HmacRejected>());
-    expect((result as HmacRejected).reason, contains('signature'));
+    expect((result as HmacRejected).detail, contains('signature'));
   });
 
   test('returns Rejected for unknown sender', () async {
@@ -138,7 +138,10 @@ void main() {
     // Did NOT add peer to repo.
     final result = await verifyFromHeaders(peer: peer, headers: headers);
     expect(result, isA<HmacRejected>());
-    expect((result as HmacRejected).reason, contains('unknown sender'));
+    expect((result as HmacRejected).detail, contains('unknown sender'));
+    // Audit #1: unknown-sender is the only reason that drives reactive
+    // forget on the wire (mapped to 403 + X-Sharer-Reason by the server).
+    expect(result.reason, HmacRejectionReason.unknownSender);
   });
 
   test('accepts a valid signed request from a paired peer', () async {
@@ -172,7 +175,7 @@ void main() {
     );
     final result = await verifyFromHeaders(peer: peer, headers: headers);
     expect(result, isA<HmacRejected>());
-    expect((result as HmacRejected).reason, contains('signature'));
+    expect((result as HmacRejected).detail, contains('signature'));
   });
 
   test('rejects when filename in canonical string does not match', () async {
@@ -208,7 +211,10 @@ void main() {
     );
     final result = await verifyFromHeaders(peer: peer, headers: stale);
     expect(result, isA<HmacRejected>());
-    expect((result as HmacRejected).reason, contains('timestamp'));
+    expect((result as HmacRejected).detail, contains('timestamp'));
+    // Audit #1: clock skew is a transient failure — it must NOT unpair a
+    // still-valid peer, so it stays a bare 401 (no reason header).
+    expect(result.reason, HmacRejectionReason.transient);
   });
 
   test('rejects replayed nonce within the TTL window', () async {
@@ -252,7 +258,7 @@ void main() {
     now = now.add(const Duration(seconds: 120));
     final result = await verifyFromHeaders(peer: peer, headers: headers);
     expect(result, isA<HmacRejected>());
-    expect((result as HmacRejected).reason, contains('timestamp'));
+    expect((result as HmacRejected).detail, contains('timestamp'));
   });
 
   test('rejects malformed signature (non-base64)', () async {

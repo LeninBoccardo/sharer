@@ -276,9 +276,20 @@ class HttpFileServer {
           _log('Reject upload from $senderId ($senderName): unsigned');
           await request.read().drain<void>();
           return Response.unauthorized('');
-        case HmacRejected(:final reason):
-          _log('Reject upload from $senderId ($senderName): $reason');
+        case HmacRejected(:final detail, :final reason):
+          _log('Reject upload from $senderId ($senderName): $detail');
           await request.read().drain<void>();
+          // Audit #1: only an unknown-sender rejection means the peer
+          // doesn't recognize our identity/PSK — surface it distinctly so
+          // the sender can reactively forget us. Every transient signing
+          // failure stays a bare 401 (no reason header) so it never
+          // unpairs a still-valid peer.
+          if (reason == HmacRejectionReason.unknownSender) {
+            return Response.forbidden('', headers: {
+              TransportProtocol.headerReason:
+                  TransportProtocol.reasonUnknownSender,
+            });
+          }
           return Response.unauthorized('');
       }
     }

@@ -113,8 +113,11 @@ void main() {
     tmpDir.deleteSync(recursive: true);
   });
 
-  test('a 401 response from a paired peer triggers reactive forget '
-      'and emits a ForgetEvent with cause=reactive', () async {
+  test('a 403 unknown-sender response from a peer that forgot us triggers '
+      'reactive forget and emits a ForgetEvent with cause=reactive', () async {
+    // The receiver knows nobody, so the verifier rejects with
+    // unknownSender -> 403 + X-Sharer-Reason, which is the one signal
+    // that drives reactive forget (audit #1).
     final received = <ForgetEvent>[];
     final sub = senderForget.events.listen(received.add);
 
@@ -153,6 +156,62 @@ void main() {
         reason: 'reactive forget should have removed the local pair');
 
     // The transfer itself ends in failed.
+    expect(transfers.last.first.status, TransferStatus.failed);
+
+    await sub.cancel();
+    await tSub.cancel();
+  });
+
+  test('a transient 401 (signature mismatch from a known peer) does NOT '
+      'trigger reactive forget — the pair stays intact', () async {
+    // Audit #1: the receiver KNOWS this sender but under a different PSK,
+    // so the signature mismatches -> bare 401 (transient), NOT a 403
+    // unknown-sender. A still-valid pair must survive a transient
+    // failure (clock skew, replay, wrong-PSK blip) without being
+    // silently unpaired.
+    await receiverPaired.add(PairedDevice(
+      deviceId: senderIdentity.id,
+      displayName: 'Sender',
+      psk: _psk(8), // different PSK -> signature mismatch -> transient 401
+      publicKey: _stubPub(7),
+      pairedAt: DateTime.utc(2026, 5, 4),
+    ));
+
+    final received = <ForgetEvent>[];
+    final sub = senderForget.events.listen(received.add);
+    final transfers = <List<Transfer>>[];
+    final tSub = service.watchAll().listen(transfers.add);
+
+    final body = utf8.encode('hello');
+    await service.send(
+      peer: Peer(
+        id: 'receiver-id',
+        name: 'Receiver',
+        host: '127.0.0.1',
+        port: server.boundPort!,
+        isPaired: true,
+        lastSeen: DateTime.utc(2026, 5, 5),
+      ),
+      file: FilePayload(
+        fileName: 'note.txt',
+        sizeBytes: body.length,
+        bytes: Stream.value(body),
+      ),
+    );
+
+    for (var i = 0; i < 30; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      if (transfers.isNotEmpty &&
+          transfers.last.isNotEmpty &&
+          transfers.last.first.status == TransferStatus.failed) {
+        break;
+      }
+    }
+
+    expect(received, isEmpty,
+        reason: 'a transient 401 must NOT unpair a still-valid peer');
+    expect(await senderPaired.get('receiver-id'), isNotNull,
+        reason: 'the pair stays intact on a transient failure');
     expect(transfers.last.first.status, TransferStatus.failed);
 
     await sub.cancel();

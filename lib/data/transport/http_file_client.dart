@@ -28,14 +28,21 @@ class UploadStatusException implements Exception {
     required this.statusCode,
     required this.body,
     required this.uri,
+    this.reason,
   });
   final int statusCode;
   final String body;
   final Uri uri;
 
+  /// Audit #1: the server's `X-Sharer-Reason` header, when present.
+  /// `'unknown-sender'` on a 403 means the peer doesn't recognize us and
+  /// the transfer layer should reactively forget them; null (e.g. on a
+  /// bare 401) means a transient signing failure that must NOT unpair.
+  final String? reason;
+
   @override
   String toString() => 'Upload failed: $statusCode ${body.isEmpty ? '' : body} '
-      '(POST $uri)';
+      '${reason == null ? '' : 'reason=$reason '}(POST $uri)';
 }
 
 /// Slice 5.x.2.3: typed failure for a production (TLS) upload to a
@@ -198,6 +205,7 @@ class HttpFileClient {
           statusCode: response.statusCode,
           body: body,
           uri: uri,
+          reason: response.headers.value(TransportProtocol.headerReason),
         );
       }
 

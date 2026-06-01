@@ -17,6 +17,7 @@ import '../security/forget_service.dart';
 import 'http_file_client.dart';
 import 'http_file_server.dart';
 import 'incoming_event.dart';
+import 'transport_protocol.dart';
 
 /// Aggregates outgoing sends and incoming receives into a single
 /// reactive list of [Transfer] objects. The UI watches one stream and
@@ -164,8 +165,13 @@ class TransferServiceImpl implements TransferService {
       // Slice 5.4 reactive forget: a 401 from a peer that's in our
       // PairedDevices store means they removed us. Drop the local
       // entry and emit a forget event so the user gets a notification.
+      // Audit #1: only a 403 + X-Sharer-Reason: unknown-sender means the
+      // peer dropped us from their paired store. A bare 401 is a
+      // transient signing failure (clock skew, nonce replay, malformed
+      // headers) and must NOT silently unpair a still-valid peer.
       if (e is UploadStatusException &&
-          e.statusCode == 401 &&
+          e.statusCode == 403 &&
+          e.reason == TransportProtocol.reasonUnknownSender &&
           paired != null &&
           _forget != null) {
         unawaited(_forget.recordReactive401(paired));

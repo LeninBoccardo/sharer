@@ -114,4 +114,18 @@ abstract final class TransportProtocol {
   /// signals an unencrypted body (kept only as a test-convenience path
   /// for plain-HTTP servers).
   static const String headerTransferId = 'x-sharer-transferid';
+
+  /// Audit #1: on an `/upload` rejection the server echoes a coarse
+  /// machine-readable reason here so the *sender* can tell a permanent
+  /// "you're not paired with me" rejection apart from a transient
+  /// signing failure (clock skew, nonce replay, malformed headers).
+  /// Only [reasonUnknownSender] should drive the reactive forget path; a
+  /// bare 401 with no reason header is transient and must NOT unpair
+  /// anyone. Deliberately coarse — it does NOT leak which specific check
+  /// failed.
+  static const String headerReason = 'x-sharer-reason';
+
+  /// Value of [headerReason] meaning "the senderDeviceId is not in my
+  /// paired store" — the peer forgot us. Paired with HTTP 403.
+  static const String reasonUnknownSender = 'unknown-sender';
 }
