@@ -68,13 +68,23 @@ class NotificationRouter {
   String? _launchPayload;
 
   Future<void> start() async {
-    // Read launch details BEFORE attaching the listener so the
-    // dedup latch is populated before any potential foreground
-    // re-fire from the OEM.
+    // Audit #18: attach the foreground responses listener BEFORE the
+    // async readLaunchDetails() round-trip. NotificationService.responses
+    // is a broadcast stream with no buffering for late subscribers, so a
+    // tap/action firing during the readLaunchDetails() await would be
+    // silently dropped if we subscribed afterwards.
+    //
+    // The cold-start dedup latch stays correct: broadcast events deliver
+    // on a microtask, so any response queued during the await can't run
+    // _handleResponse until this synchronous run yields. The latch is
+    // populated synchronously right after the await resolves, and the OEM
+    // cold-start re-fire arrives only once the engine is fully up — so it
+    // still sees a populated latch and is deduped. A genuine early
+    // foreground tap (not the cold-start tap) routes against a null latch.
+    _sub = _service.responses.listen(_handleResponse);
     final launch = await _service.readLaunchDetails();
     _launchActionId = launch?.actionId;
     _launchPayload = launch?.payload;
-    _sub = _service.responses.listen(_handleResponse);
     if (launch != null) {
       await _route(actionId: launch.actionId, payload: launch.payload);
       _log('handled cold-start launch');

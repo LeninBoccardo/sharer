@@ -21,11 +21,22 @@ class _FakeService extends NotificationService {
   final _controller = StreamController<NotificationResponse>.broadcast();
   NotificationLaunch? coldStartLaunch;
 
+  /// Audit #18: a gate that lets a test suspend readLaunchDetails() and
+  /// emit a foreground response while it's in flight, plus a hook that
+  /// fires when readLaunchDetails() is entered.
+  Completer<void>? readGate;
+  void Function()? onReadLaunch;
+
   @override
   Stream<NotificationResponse> get responses => _controller.stream;
 
   @override
-  Future<NotificationLaunch?> readLaunchDetails() async => coldStartLaunch;
+  Future<NotificationLaunch?> readLaunchDetails() async {
+    onReadLaunch?.call();
+    final gate = readGate;
+    if (gate != null) await gate.future;
+    return coldStartLaunch;
+  }
 
   void emit(NotificationResponse response) => _controller.add(response);
 
@@ -81,6 +92,42 @@ void main() {
     await service.dispose();
     await inviteService.dispose();
     await pairedStore.dispose();
+  });
+
+  group('start ordering / early-foreground race (audit #18)', () {
+    test('a foreground tap fired during readLaunchDetails() is delivered, '
+        'not dropped', () async {
+      // Fresh service whose readLaunchDetails() is gated and emits an early
+      // foreground tap WHILE suspended — i.e. before start() would have
+      // subscribed under the old ordering.
+      final svc = _FakeService();
+      final opened = <String>[];
+      final r = NotificationRouter(
+        service: svc,
+        inviteController: inviteController,
+        openFile: (p) async => opened.add(p),
+        showMainWindow: () async {},
+      );
+      svc.readGate = Completer<void>();
+      svc.onReadLaunch = () => svc.emit(const NotificationResponse(
+            notificationResponseType:
+                NotificationResponseType.selectedNotificationAction,
+            actionId: NotificationActions.transferOpen,
+            payload: 'transfer_done:early|/dl/EARLY.jpg',
+          ));
+
+      final f = r.start(); // do NOT await — readLaunchDetails is gated
+      await pumpEventQueue(); // let the early emit attempt to dispatch
+      svc.readGate!.complete();
+      await f;
+      await pumpEventQueue();
+
+      expect(opened, ['/dl/EARLY.jpg'],
+          reason: 'the early foreground tap must not be dropped');
+
+      await r.dispose();
+      await svc.dispose();
+    });
   });
 
   group('foreground responses', () {
