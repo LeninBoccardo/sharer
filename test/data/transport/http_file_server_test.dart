@@ -421,6 +421,50 @@ void main() {
           reason: 'should not have written outside the downloads dir');
       expect(f.dir.listSync(), isNotEmpty);
     });
+
+    test('sanitizes Windows-illegal chars + reserved device names (audit #24)',
+        () async {
+      final f = await _setupSigned();
+      addTearDown(() async {
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
+      });
+
+      await f.server.start();
+      f.trust.add(true);
+      await _settle();
+
+      Future<void> send(String fileName) async {
+        await (await _postSignedUpload(
+          port: f.server.boundPort!,
+          signer: f.signer,
+          signWithPsk: f.peer.psk,
+          encryptWithPsk: f.peer.psk,
+          senderId: f.peer.deviceId,
+          senderName: f.peer.displayName,
+          fileName: fileName,
+          body: utf8.encode('x'),
+        ))
+            .drain<void>();
+        await _settle();
+      }
+
+      await send('report.pdf:evil.exe'); // NTFS ADS / drive-relative vector
+      await send('a<b>c"d|e?f*g.txt'); // other Win32-illegal chars
+      await send('CON'); // reserved DOS device name
+
+      final names =
+          f.dir.listSync().map((e) => e.uri.pathSegments.last).toList();
+      expect(names, contains('report.pdf_evil.exe'),
+          reason: 'colon replaced — no ADS stream reachable');
+      expect(names, contains('a_b_c_d_e_f_g.txt'));
+      expect(names, contains('_CON'),
+          reason: 'reserved device name prefixed with _');
+      expect(names.any((n) => n.contains(':')), isFalse,
+          reason: 'no colon (ADS) filename should survive sanitization');
+    });
   });
 
   group('HttpFileServer — HMAC verification', () {

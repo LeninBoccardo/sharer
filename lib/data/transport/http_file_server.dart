@@ -779,6 +779,15 @@ class HttpFileServer {
   /// code).
   static String _sanitizeFileName(String name) {
     var s = name.replaceAll(RegExp(r'[\\/]'), '_');
+    // Audit #24: characters that are illegal in a Win32 path AND never
+    // valid in a portable filename. `:` is the dangerous one — a name
+    // like `report.pdf:evil.exe` would otherwise resolve to an NTFS
+    // Alternate Data Stream (invisible in Explorer, runnable via
+    // wmic/start) and `C:foo` to a drive-relative write. The rest
+    // (`< > " | ? *`) are rejected by CreateFile and are good hygiene
+    // everywhere, so replace them unconditionally rather than gating on
+    // Platform.isWindows.
+    s = s.replaceAll(RegExp(r'[<>:"|?*]'), '_');
     // ASCII control chars (NUL through US, plus DEL).
     s = s.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '');
     // Unicode bidi controls: LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI,
@@ -788,6 +797,18 @@ class HttpFileServer {
     s = s.replaceAll(_bidiControlsPattern, '');
     s = s.replaceAll('..', '_');
     s = s.trim();
+    // Audit #24: reserved DOS device names (CON, PRN, AUX, NUL, COM1-9,
+    // LPT1-9) refer to devices, not files — opening `CON` or `NUL` even
+    // with an extension (`CON.txt`) opens a device handle on Windows.
+    // Windows compares the *stem* (text before the first dot), case-
+    // insensitively, so guard on that and prefix `_` to make the name
+    // ordinary. Done after illegal-char/bidi stripping so a disguised
+    // `C:ON` collapses to `C_ON` (not reserved) first.
+    final stem = s.split('.').first;
+    if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$', caseSensitive: false)
+        .hasMatch(stem)) {
+      s = '_$s';
+    }
     // Windows refuses filenames that end in `.` or space — strip
     // trailing instances after the other transforms have settled.
     while (s.isNotEmpty && (s.endsWith('.') || s.endsWith(' '))) {
