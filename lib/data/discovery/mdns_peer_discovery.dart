@@ -62,6 +62,15 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   /// peer disappears within at most [_peerTtl] + this interval.
   static const _defaultPruneInterval = Duration(seconds: 30);
 
+  /// Upper bound a *waiting* reconcile caller will block on the in-flight
+  /// reconcile before giving up. The only thing a reconcile awaits is the
+  /// backend's broadcast/observe/stop calls; bonsoir's `stop()` has been
+  /// observed to wedge on Android teardown (see reference_bonsoir_ip_flake).
+  /// Without this guard a wedged `stop()` would hang [dispose] — and thus
+  /// app/provider teardown — forever. On timeout the waiter logs and
+  /// returns; the in-flight reconcile is left to finish on its own.
+  static const _defaultReconcileWaitTimeout = Duration(seconds: 5);
+
   final MdnsBackend _backend;
   final DeviceIdentityRepository _identityRepo;
   final Stream<bool> _isTrusted;
@@ -69,6 +78,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   final DateTime Function() _now;
   final Duration _peerTtl;
   final Duration _pruneInterval;
+  final Duration _reconcileWaitTimeout;
 
   MdnsBroadcaster? _broadcaster;
   MdnsObserver? _observer;
@@ -87,6 +97,11 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   bool _desiredEnabled = false;
   bool _reconcileInFlight = false;
   bool _reconcileQueued = false;
+  // Completed by the in-flight reconcile owner in its `finally`. A second
+  // caller awaits this single future instead of polling the event loop.
+  // Non-null exactly while [_reconcileInFlight] is true (both are set in
+  // the owner's synchronous prologue before its first await).
+  Completer<void>? _reconcileDone;
 
   MdnsPeerDiscovery({
     required MdnsBackend backend,
@@ -96,13 +111,15 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     DateTime Function()? now,
     Duration peerTtl = _defaultPeerTtl,
     Duration pruneInterval = _defaultPruneInterval,
+    Duration reconcileWaitTimeout = _defaultReconcileWaitTimeout,
   })  : _backend = backend,
         _identityRepo = identityRepo,
         _isTrusted = isTrusted,
         _random = random ?? Random(),
         _now = now ?? DateTime.now,
         _peerTtl = peerTtl,
-        _pruneInterval = pruneInterval;
+        _pruneInterval = pruneInterval,
+        _reconcileWaitTimeout = reconcileWaitTimeout;
 
   @override
   Stream<List<Peer>> watchPeers() async* {
@@ -165,15 +182,27 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
 
   Future<void> _runReconcileToCompletion() async {
     if (_reconcileInFlight) {
-      // Wait for the in-flight reconciler to finish (it'll pick up our
-      // changes via the queued flag).
+      // A reconcile is already running. Queue our desired-state change so
+      // the owner's convergence loop picks it up on its next iteration,
+      // then await the owner's completion future — a single await, not a
+      // microtask spin. The timeout is an escape hatch: a wedged backend
+      // stop() must never hang dispose() forever (audit #16).
       _reconcileQueued = true;
-      while (_reconcileInFlight) {
-        await Future<void>.delayed(Duration.zero);
+      final done = _reconcileDone;
+      if (done == null) return; // raced to completion; nothing to wait on.
+      try {
+        await done.future.timeout(_reconcileWaitTimeout);
+      } on TimeoutException {
+        _log('Reconcile wait timed out after '
+            '${_reconcileWaitTimeout.inSeconds}s; proceeding without it');
       }
       return;
     }
+    // We own this reconcile. Create the completion future BEFORE the first
+    // await so any caller that observes _reconcileInFlight==true also sees
+    // a non-null _reconcileDone to await.
     _reconcileInFlight = true;
+    final done = _reconcileDone = Completer<void>();
     try {
       do {
         _reconcileQueued = false;
@@ -181,6 +210,8 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
       } while (_reconcileQueued);
     } finally {
       _reconcileInFlight = false;
+      _reconcileDone = null;
+      if (!done.isCompleted) done.complete();
     }
   }
 

@@ -31,6 +31,31 @@ class _StaticIdentityRepo implements DeviceIdentityRepository {
       throw UnimplementedError('mdns tests do not exercise Ed25519 signing');
 }
 
+/// Backend whose broadcaster/observer `stop()` never completes — models
+/// bonsoir wedging on Android teardown (audit #16). observe()/broadcast()
+/// themselves resolve so discovery can come up before the wedge.
+class _HangingBackend implements MdnsBackend {
+  @override
+  Future<MdnsBroadcaster> broadcast(MdnsServiceSpec spec) async =>
+      _HangingBroadcaster();
+  @override
+  Future<MdnsObserver> observe({required String type}) async =>
+      _HangingObserver();
+}
+
+class _HangingBroadcaster implements MdnsBroadcaster {
+  @override
+  Future<void> stop() => Completer<void>().future; // never completes
+}
+
+class _HangingObserver implements MdnsObserver {
+  final _c = StreamController<MdnsEvent>.broadcast();
+  @override
+  Stream<MdnsEvent> get events => _c.stream;
+  @override
+  Future<void> stop() => Completer<void>().future; // never completes
+}
+
 /// Pumps the microtask + small timer queue so async listeners and the
 /// reconciler get a chance to settle before assertions.
 Future<void> _settle() async {
@@ -546,6 +571,33 @@ void main() {
       s.discovery.prunePeers(); // no crash, nothing to remove
 
       expect((await s.discovery.watchPeers().first), isEmpty);
+    });
+  });
+
+  group('MdnsPeerDiscovery — reconcile timeout guard', () {
+    test('stop() does not hang when the backend stop() never completes '
+        '(audit #16)', () async {
+      final trust = StreamController<bool>.broadcast();
+      final discovery = MdnsPeerDiscovery(
+        backend: _HangingBackend(),
+        identityRepo: _StaticIdentityRepo(id: 'self', name: 'Self'),
+        isTrusted: trust.stream,
+        reconcileWaitTimeout: const Duration(milliseconds: 50),
+      );
+      addTearDown(trust.close);
+
+      await discovery.start();
+      trust.add(true);
+      await _settle(); // observer + broadcaster come up (fast)
+
+      // An owner reconcile now wedges on the hanging stop()…
+      trust.add(false);
+      await _settle();
+
+      // …and a second caller (stop) must return via the timeout guard,
+      // not spin/hang forever. The outer timeout is the test's safety net:
+      // if the guard failed this would throw TimeoutException.
+      await discovery.stop().timeout(const Duration(seconds: 2));
     });
   });
 }
