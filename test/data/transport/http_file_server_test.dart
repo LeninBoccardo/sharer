@@ -49,7 +49,11 @@ typedef _SignedFixture = ({
   PairedDevice peer,
 });
 
-Future<_SignedFixture> _setupSigned({int seed = 7, int? maxTransferBytes}) async {
+Future<_SignedFixture> _setupSigned({
+  int seed = 7,
+  int? maxTransferBytes,
+  int? uploadOverSizeSlack,
+}) async {
   final dir = Directory.systemTemp.createTempSync('sharer_server_test_');
   final trust = StreamController<bool>.broadcast();
   final paired = PairedDevicesStore(FakeSecureKeyValueStore());
@@ -68,6 +72,8 @@ Future<_SignedFixture> _setupSigned({int seed = 7, int? maxTransferBytes}) async
     port: 0,
     maxTransferBytes:
         maxTransferBytes ?? HttpFileServer.defaultMaxTransferBytes,
+    uploadOverSizeSlack:
+        uploadOverSizeSlack ?? HttpFileServer.defaultUploadOverSizeSlack,
   );
   return (
     server: server,
@@ -99,7 +105,12 @@ Future<HttpClientResponse> _postSignedUpload({
   required String senderName,
   required String fileName,
   required List<int> body,
+  int? declaredSize,
 }) async {
+  // The declared plaintext size (X-Sharer-FileSize + signed filesize) can
+  // be overridden independently of the actual body so tests can exercise
+  // the over-size (audit #10) and length-mismatch (audit #13) guards.
+  final declared = declaredSize ?? body.length;
   final transferId = newTransferId(Random(31));
   final transferIdB64 = base64Encode(transferId);
 
@@ -124,7 +135,7 @@ Future<HttpClientResponse> _postSignedUpload({
     path: TransportProtocol.uploadPath,
     senderDeviceId: senderId,
     filename: fileName,
-    filesize: body.length,
+    filesize: declared,
     transferId: transferIdB64,
   );
   final client = HttpClient();
@@ -137,7 +148,7 @@ Future<HttpClientResponse> _postSignedUpload({
       TransportProtocol.headerFileName,
       Uri.encodeComponent(fileName),
     );
-    req.headers.set(TransportProtocol.headerFileSize, body.length.toString());
+    req.headers.set(TransportProtocol.headerFileSize, declared.toString());
     req.headers.set(TransportProtocol.headerDeviceId, senderId);
     req.headers.set(
       TransportProtocol.headerDeviceName,
@@ -482,6 +493,60 @@ void main() {
       expect(escaped.existsSync(), isFalse,
           reason: 'should not have written outside the downloads dir');
       expect(f.dir.listSync(), isNotEmpty);
+    });
+
+    test('aborts an /upload that grossly overruns its declared size with '
+        '413 (audit #10)', () async {
+      final f = await _setupSigned(uploadOverSizeSlack: 0);
+      addTearDown(() async {
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
+      });
+
+      final events = <IncomingEvent>[];
+      final eventsSub = f.server.events.listen(events.add);
+
+      await f.server.start();
+      f.trust.add(true);
+      await _settle();
+
+      // Declare 8 bytes (signed) but actually ship 64 — with zero slack
+      // the in-loop guard trips and aborts before the post-loop backstop.
+      final body = utf8.encode('A' * 64);
+      int? status;
+      try {
+        final resp = await _postSignedUpload(
+          port: f.server.boundPort!,
+          signer: f.signer,
+          signWithPsk: f.peer.psk,
+          encryptWithPsk: f.peer.psk,
+          senderId: f.peer.deviceId,
+          senderName: f.peer.displayName,
+          fileName: 'liar.bin',
+          body: body,
+          declaredSize: 8,
+        );
+        status = resp.statusCode;
+        await resp.drain<void>();
+      } on SocketException {
+        // mid-stream abort may reset the connection — also a refusal
+      } on HttpException {
+        // likewise
+      }
+      await _settle();
+
+      if (status != null) {
+        expect(status, HttpStatus.requestEntityTooLarge,
+            reason: 'gross over-size abort returns 413');
+        // Over-size is not an unpair trigger — no reason header.
+      }
+      expect(f.dir.listSync().whereType<File>(), isEmpty,
+          reason: 'partial deleted on over-size abort');
+      expect(events.whereType<IncomingFailed>(), isNotEmpty);
+
+      await eventsSub.cancel();
     });
 
     test('aborts an /upload exceeding the per-transfer ceiling with 507 '

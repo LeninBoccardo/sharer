@@ -87,12 +87,28 @@ class HttpFileServer {
   /// a drop-in with no change to the receive loop.
   static const int defaultMaxTransferBytes = 512 * 1024 * 1024 * 1024;
 
+  /// Audit #10: slack added on top of the sender's declared plaintext
+  /// size before an /upload stream is treated as a disk-fill attack. NOT
+  /// a product size cap (principle 6) — it only bounds how far a peer may
+  /// overrun the size it itself declared in X-Sharer-FileSize. 64 MiB
+  /// absorbs honest slop while still aborting early a peer that streams
+  /// effectively unbounded data against a small declared size. A stream
+  /// with NO declared size (totalBytes == 0) is left to the absolute
+  /// [defaultMaxTransferBytes] backstop (audit #25), so this gross-overrun
+  /// guard is only armed when a usable size was declared.
+  static const defaultUploadOverSizeSlack = 64 * 1024 * 1024;
+
   final DownloadsLocator _downloads;
 
   /// Audit #25: effective per-transfer write ceiling for this server.
   /// Defaults to [defaultMaxTransferBytes]; injectable for tests and a
   /// future free-space-aware composition root.
   final int _maxTransferBytes;
+
+  /// Audit #10: effective gross-overrun slack over the declared size.
+  /// Defaults to [_uploadOverSizeSlackBytes]; injectable so tests can set
+  /// it tight without shipping a 64 MiB body.
+  final int _uploadOverSizeSlack;
   final Stream<bool> _isTrusted;
   final HmacVerifier? _verifier;
   final PairingService? _pairing;
@@ -138,6 +154,7 @@ class HttpFileServer {
     Future<TlsKeyMaterial>? tlsMaterial,
     int port = TransportProtocol.defaultPort,
     int maxTransferBytes = defaultMaxTransferBytes,
+    int uploadOverSizeSlack = defaultUploadOverSizeSlack,
     Uuid? uuid,
   })  : _downloads = downloads,
         _isTrusted = isTrusted,
@@ -149,6 +166,7 @@ class HttpFileServer {
         _tlsFuture = tlsMaterial,
         _port = port,
         _maxTransferBytes = maxTransferBytes,
+        _uploadOverSizeSlack = uploadOverSizeSlack,
         _uuid = uuid ?? const Uuid();
 
   Stream<IncomingEvent> get events => _events.stream;
@@ -420,6 +438,19 @@ class HttpFileServer {
             },
           );
         }
+        // Audit #10: gross-overrun of the sender's OWN declared size —
+        // abort early (don't write tens of GiB to disk before the
+        // post-loop length backstop rejects it). Only armed when a usable
+        // size was declared; a no-declared flood is caught by #25 above.
+        // Throwing routes into the _UploadOverSizeException catch → 413.
+        if (totalBytes > 0 &&
+            bytesReceived > totalBytes + _uploadOverSizeSlack) {
+          throw _UploadOverSizeException(
+            received: bytesReceived,
+            ceiling: totalBytes + _uploadOverSizeSlack,
+            declared: totalBytes,
+          );
+        }
         sink.add(chunk);
         if (bytesReceived - lastEmittedBytes >= _progressThresholdBytes) {
           _events.add(IncomingProgress(id: id, bytesReceived: bytesReceived));
@@ -447,6 +478,23 @@ class HttpFileServer {
         }),
         headers: {'content-type': 'application/json'},
       );
+    } on _UploadOverSizeException catch (e, st) {
+      // Audit #10: the stream overran its declared size by more than the
+      // allowed slack — a disk-fill attempt, not a server fault. Reuse
+      // the same cleanup, but answer 413 (Payload Too Large). No reason
+      // header: an over-size abort is NOT an unpair signal (audit #1
+      // reserves X-Sharer-Reason for unknown-sender).
+      _log('Receive aborted id=$id: $e');
+      developer.log('Receive aborted (over-size)',
+          error: e, stackTrace: st, name: _logName);
+      try {
+        await sink.close();
+      } catch (_) {}
+      try {
+        if (await destFile.exists()) await destFile.delete();
+      } catch (_) {}
+      _events.add(IncomingFailed(id: id, error: e.toString()));
+      return Response(HttpStatus.requestEntityTooLarge, body: e.toString());
     } catch (e, st) {
       _log('Receive failed id=$id: $e');
       developer.log('Receive failed', error: e, stackTrace: st, name: _logName);
@@ -936,4 +984,24 @@ class HttpFileServer {
     developer.log(message, name: _logName);
     debugPrint('[$_logName] $message');
   }
+}
+
+/// Audit #10: thrown inside [HttpFileServer._handleUpload] when an inbound
+/// /upload stream overruns its declared plaintext size by more than the
+/// allowed slack. Caught locally and mapped to HTTP 413; never leaks past
+/// _handleUpload.
+class _UploadOverSizeException implements Exception {
+  final int received;
+  final int ceiling;
+  final int declared;
+  const _UploadOverSizeException({
+    required this.received,
+    required this.ceiling,
+    required this.declared,
+  });
+
+  @override
+  String toString() =>
+      'upload exceeded size bound: received=$received bytes, '
+      'ceiling=$ceiling bytes (declared=$declared)';
 }
