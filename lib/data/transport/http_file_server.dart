@@ -755,10 +755,13 @@ class HttpFileServer {
   /// canonical from `peer_forget_signer.dart` using the per-pair PSK.
   ///
   /// Result table:
-  ///   - sender unknown → 200 (idempotent: we already aren't paired)
-  ///   - HMAC mismatch  → 401 (don't leak which check failed)
-  ///   - HMAC ok        → 200 + remove the local PairedDevice + emit
-  ///                       a [ForgetEvent] so the UI can surface a toast
+  ///   - sender unknown      → 200 (idempotent: we already aren't paired)
+  ///   - HMAC mismatch       → 401 (don't leak which check failed)
+  ///   - stale / replayed    → 401 (audit #23 — same window + nonce buffer
+  ///                            as /upload; a captured POST can't be
+  ///                            replayed to tear the pairing down)
+  ///   - HMAC ok & fresh     → 200 + remove the local PairedDevice + emit
+  ///                            a [ForgetEvent] so the UI can surface a toast
   Future<Response> _handlePeerForgotYou(Request request) async {
     final raw = await _readBodyCapped(request, _maxJsonBodyBytes);
     if (raw == null) {
@@ -773,13 +776,22 @@ class HttpFileServer {
       return Response.badRequest();
     }
     String senderId;
+    String timestamp;
+    String nonce;
     String signatureBase64;
     try {
       senderId = j['senderId'] as String;
+      timestamp = j['timestamp'] as String;
+      nonce = j['nonce'] as String;
       signatureBase64 = j['signature'] as String;
     } catch (_) {
       _log('peer-forgot-you reject: missing fields');
       return Response.badRequest();
+    }
+    final tsMs = int.tryParse(timestamp);
+    if (tsMs == null) {
+      _log('peer-forgot-you reject: malformed timestamp from $senderId');
+      return Response.unauthorized('');
     }
     final verifier = _verifier!;
     final paired = await verifier.repository.get(senderId);
@@ -791,10 +803,26 @@ class HttpFileServer {
     final ok = verifyPeerForgotYouSignature(
       psk: paired.psk,
       senderId: senderId,
+      timestampMs: tsMs,
+      nonce: nonce,
       providedBase64: signatureBase64,
     );
     if (!ok) {
       _log('peer-forgot-you reject: bad signature from $senderId');
+      return Response.unauthorized('');
+    }
+    // Audit #23: signature authentic — NOW enforce freshness against the
+    // same ~30 s window + nonce buffer /upload uses. Done after the
+    // signature check so an unauthenticated flood can't poison the nonce
+    // buffer. A captured-then-replayed token fails here (stale timestamp or
+    // repeated nonce) even though its signature verifies.
+    final freshness = verifier.checkFreshness(
+      senderDeviceId: senderId,
+      timestamp: timestamp,
+      nonce: nonce,
+    );
+    if (freshness != FreshnessResult.fresh) {
+      _log('peer-forgot-you reject: $freshness from $senderId');
       return Response.unauthorized('');
     }
     // HMAC succeeded → cache the source IP just like /upload does, then

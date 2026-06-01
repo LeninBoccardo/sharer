@@ -56,6 +56,22 @@ class HmacRejected extends HmacVerifyResult {
   const HmacRejected(this.detail, this.reason);
 }
 
+/// Outcome of a standalone freshness check ([HmacVerifier.checkFreshness]).
+/// Used by light-weight signed endpoints (e.g. `/peer-forgot-you`) that
+/// have already verified authenticity and only need the same timestamp
+/// window + nonce-replay guard the full [HmacVerifier.verify] path applies.
+enum FreshnessResult {
+  /// Timestamp in window AND nonce unseen — and now recorded so an
+  /// immediate replay of the same nonce will be [replayed].
+  fresh,
+
+  /// Timestamp missing, malformed, or outside the clock-skew window.
+  staleTimestamp,
+
+  /// Nonce missing/empty, or already seen within the nonce TTL.
+  replayed,
+}
+
 /// Server-side validator for the X-Sharer-Sig family of headers.
 ///
 /// Holds an in-memory replay buffer of recently-seen nonces. The buffer
@@ -125,8 +141,8 @@ class HmacVerifier {
     if (ts == null) {
       return _reject('malformed timestamp', HmacRejectionReason.transient);
     }
-    final ageMs = _now().toUtc().millisecondsSinceEpoch - ts;
-    if (ageMs.abs() > _clockSkew.inMilliseconds) {
+    if (!_inClockWindow(ts)) {
+      final ageMs = _now().toUtc().millisecondsSinceEpoch - ts;
       return _reject('timestamp out of window (age=${ageMs}ms)',
           HmacRejectionReason.transient);
     }
@@ -158,6 +174,42 @@ class HmacVerifier {
 
     _seenNonces[replayKey] = _now();
     return HmacAuthenticated(device);
+  }
+
+  /// Audit #23: standalone freshness primitive for signed endpoints that
+  /// verify authenticity themselves (e.g. `/peer-forgot-you`) but still
+  /// need the SAME replay protection [verify] applies to `/upload`: the
+  /// timestamp must be within the clock-skew window AND the
+  /// `(senderDeviceId|nonce)` pair must be unseen within the nonce TTL.
+  ///
+  /// Shares this instance's [_seenNonces] buffer, [_clockSkew], [_nonceTtl]
+  /// and [_now] so a nonce burned here also blocks a later `/upload` replay
+  /// and vice-versa. On a [FreshnessResult.fresh] result the nonce is
+  /// RECORDED — call this only AFTER the caller has verified the signature,
+  /// so an unauthenticated flood can't poison the buffer.
+  FreshnessResult checkFreshness({
+    required String senderDeviceId,
+    required String? timestamp,
+    required String? nonce,
+  }) {
+    if (!_present(nonce)) return FreshnessResult.replayed;
+    if (!_present(timestamp)) return FreshnessResult.staleTimestamp;
+    final ts = int.tryParse(timestamp!);
+    if (ts == null || !_inClockWindow(ts)) {
+      return FreshnessResult.staleTimestamp;
+    }
+    _purgeOldNonces();
+    final replayKey = '$senderDeviceId|$nonce';
+    if (_seenNonces.containsKey(replayKey)) {
+      return FreshnessResult.replayed;
+    }
+    _seenNonces[replayKey] = _now();
+    return FreshnessResult.fresh;
+  }
+
+  bool _inClockWindow(int timestampMs) {
+    final ageMs = _now().toUtc().millisecondsSinceEpoch - timestampMs;
+    return ageMs.abs() <= _clockSkew.inMilliseconds;
   }
 
   static bool _present(String? s) => s != null && s.isNotEmpty;

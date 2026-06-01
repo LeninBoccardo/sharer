@@ -279,4 +279,69 @@ void main() {
     );
     expect(result, isA<HmacRejected>());
   });
+
+  group('checkFreshness (audit #23 — shared by /peer-forgot-you)', () {
+    String tsNow() => now.toUtc().millisecondsSinceEpoch.toString();
+
+    test('fresh timestamp + unseen nonce returns fresh and records it', () {
+      expect(
+        verifier.checkFreshness(
+            senderDeviceId: 'peer', timestamp: tsNow(), nonce: 'n1'),
+        FreshnessResult.fresh,
+      );
+      // Immediate replay of the same (sender, nonce) is rejected.
+      expect(
+        verifier.checkFreshness(
+            senderDeviceId: 'peer', timestamp: tsNow(), nonce: 'n1'),
+        FreshnessResult.replayed,
+      );
+    });
+
+    test('stale timestamp (outside window) returns staleTimestamp', () {
+      final old = now
+          .subtract(const Duration(minutes: 5))
+          .toUtc()
+          .millisecondsSinceEpoch
+          .toString();
+      expect(
+        verifier.checkFreshness(
+            senderDeviceId: 'peer', timestamp: old, nonce: 'n2'),
+        FreshnessResult.staleTimestamp,
+      );
+    });
+
+    test('future timestamp (outside window) returns staleTimestamp', () {
+      final future = now
+          .add(const Duration(minutes: 5))
+          .toUtc()
+          .millisecondsSinceEpoch
+          .toString();
+      expect(
+        verifier.checkFreshness(
+            senderDeviceId: 'peer', timestamp: future, nonce: 'n3'),
+        FreshnessResult.staleTimestamp,
+      );
+    });
+
+    test('malformed timestamp returns staleTimestamp', () {
+      expect(
+        verifier.checkFreshness(
+            senderDeviceId: 'peer', timestamp: 'abc', nonce: 'n4'),
+        FreshnessResult.staleTimestamp,
+      );
+    });
+
+    test('empty or missing nonce returns replayed', () {
+      expect(
+        verifier.checkFreshness(
+            senderDeviceId: 'peer', timestamp: tsNow(), nonce: ''),
+        FreshnessResult.replayed,
+      );
+      expect(
+        verifier.checkFreshness(
+            senderDeviceId: 'peer', timestamp: tsNow(), nonce: null),
+        FreshnessResult.replayed,
+      );
+    });
+  });
 }

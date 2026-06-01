@@ -34,13 +34,20 @@ Future<void> _settle() async {
   }
 }
 
+var _nonceCounter = 0;
+String _freshNonce() => base64Encode(utf8.encode('nonce-${_nonceCounter++}'));
+
 Future<HttpClientResponse> _postPeerForgotYou({
   required int port,
   required String senderId,
+  required String timestamp,
+  required String nonce,
   required String signatureBase64,
 }) async {
   final body = jsonEncode({
     'senderId': senderId,
+    'timestamp': timestamp,
+    'nonce': nonce,
     'signature': signatureBase64,
   });
   final client = HttpClient();
@@ -148,6 +155,7 @@ void main() {
   late HttpFileServer server;
   late HmacSigner signer;
   late PairedDevice peer;
+  late DateTime clock; // injected into the verifier for deterministic freshness
 
   setUp(() async {
     tmpDir = Directory.systemTemp.createTempSync('sharer_forget_test_');
@@ -164,7 +172,8 @@ void main() {
       pairedAt: DateTime.utc(2026, 5, 4),
     );
     await paired.add(peer);
-    verifier = HmacVerifier(paired);
+    clock = DateTime.utc(2026, 6, 1, 12);
+    verifier = HmacVerifier(paired, now: () => clock);
     identity = await StaticIdentityRepo.create(seed: 9);
     forget = ForgetService(
       pairedRepo: paired,
@@ -181,7 +190,9 @@ void main() {
       forget: forget,
       port: 0,
     );
-    signer = HmacSigner();
+    // Sign with the same injected clock the verifier uses so the /upload
+    // freshness window is deterministic alongside the forget-token tests.
+    signer = HmacSigner(now: () => clock);
     await server.start();
     trust.add(true);
     await _settle();
@@ -223,11 +234,18 @@ void main() {
       final received = <ForgetEvent>[];
       final sub = forget.events.listen(received.add);
 
-      final sig = signPeerForgotYou(psk: peer.psk, senderId: peer.deviceId);
+      final token = signPeerForgotYou(
+        psk: peer.psk,
+        senderId: peer.deviceId,
+        timestampMs: clock.millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
       final response = await _postPeerForgotYou(
         port: server.boundPort!,
         senderId: peer.deviceId,
-        signatureBase64: sig,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
       );
       expect(response.statusCode, HttpStatus.ok);
       await response.drain<void>();
@@ -246,11 +264,18 @@ void main() {
       final received = <ForgetEvent>[];
       final sub = forget.events.listen(received.add);
 
-      final sig = signPeerForgotYou(psk: _psk(99), senderId: 'stranger');
+      final token = signPeerForgotYou(
+        psk: _psk(99),
+        senderId: 'stranger',
+        timestampMs: clock.millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
       final response = await _postPeerForgotYou(
         port: server.boundPort!,
         senderId: 'stranger',
-        signatureBase64: sig,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
       );
       expect(response.statusCode, HttpStatus.ok); // 200 not 401
       await response.drain<void>();
@@ -268,12 +293,18 @@ void main() {
       final sub = forget.events.listen(received.add);
 
       // Sign with the wrong PSK.
-      final sig =
-          signPeerForgotYou(psk: _psk(99), senderId: peer.deviceId);
+      final token = signPeerForgotYou(
+        psk: _psk(99),
+        senderId: peer.deviceId,
+        timestampMs: clock.millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
       final response = await _postPeerForgotYou(
         port: server.boundPort!,
         senderId: peer.deviceId,
-        signatureBase64: sig,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
       );
       expect(response.statusCode, HttpStatus.unauthorized);
       await response.drain<void>();
@@ -337,17 +368,151 @@ void main() {
       );
       expect(await cache.getById(peer.deviceId), isNotNull);
 
-      final sig = signPeerForgotYou(psk: peer.psk, senderId: peer.deviceId);
+      final token = signPeerForgotYou(
+        psk: peer.psk,
+        senderId: peer.deviceId,
+        timestampMs: clock.millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
       final response = await _postPeerForgotYou(
         port: server.boundPort!,
         senderId: peer.deviceId,
-        signatureBase64: sig,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
       );
       expect(response.statusCode, HttpStatus.ok);
       await response.drain<void>();
       await _settle();
 
       expect(await cache.getById(peer.deviceId), isNull);
+    });
+
+    test('a replayed POST (same nonce) is rejected even after re-pairing '
+        '(audit #23)', () async {
+      final token = signPeerForgotYou(
+        psk: peer.psk,
+        senderId: peer.deviceId,
+        timestampMs: clock.millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
+      // First POST succeeds and removes the pair.
+      final first = await _postPeerForgotYou(
+        port: server.boundPort!,
+        senderId: peer.deviceId,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
+      );
+      expect(first.statusCode, HttpStatus.ok);
+      await first.drain<void>();
+      await _settle();
+      expect(await paired.get(peer.deviceId), isNull);
+
+      // Simulate a fresh re-pair, then the attacker replays the captured
+      // token. The nonce is already burned -> rejected, pair survives.
+      await paired.add(peer);
+      final received = <ForgetEvent>[];
+      final sub = forget.events.listen(received.add);
+      final replay = await _postPeerForgotYou(
+        port: server.boundPort!,
+        senderId: peer.deviceId,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
+      );
+      expect(replay.statusCode, HttpStatus.unauthorized);
+      await replay.drain<void>();
+      await _settle();
+      expect(await paired.get(peer.deviceId), isNotNull,
+          reason: 'a replayed forget must not tear down the re-pair');
+      expect(received, isEmpty);
+      await sub.cancel();
+    });
+
+    test('a stale POST (timestamp far in the past) is rejected (audit #23)',
+        () async {
+      final token = signPeerForgotYou(
+        psk: peer.psk,
+        senderId: peer.deviceId,
+        timestampMs: clock
+            .subtract(const Duration(minutes: 10))
+            .millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
+      final response = await _postPeerForgotYou(
+        port: server.boundPort!,
+        senderId: peer.deviceId,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
+      );
+      expect(response.statusCode, HttpStatus.unauthorized);
+      await response.drain<void>();
+      await _settle();
+      expect(await paired.get(peer.deviceId), isNotNull);
+    });
+
+    test('a future-dated POST (timestamp ahead of the window) is rejected '
+        '(audit #23)', () async {
+      final token = signPeerForgotYou(
+        psk: peer.psk,
+        senderId: peer.deviceId,
+        timestampMs:
+            clock.add(const Duration(minutes: 10)).millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
+      final response = await _postPeerForgotYou(
+        port: server.boundPort!,
+        senderId: peer.deviceId,
+        timestamp: token.timestamp,
+        nonce: token.nonce,
+        signatureBase64: token.signature,
+      );
+      expect(response.statusCode, HttpStatus.unauthorized);
+      await response.drain<void>();
+      await _settle();
+      expect(await paired.get(peer.deviceId), isNotNull);
+    });
+
+    test('a POST missing timestamp/nonce returns 400 (audit #23)', () async {
+      final client = HttpClient();
+      try {
+        final body =
+            jsonEncode({'senderId': peer.deviceId, 'signature': 'AA=='});
+        final req = await client.postUrl(Uri.parse('http://127.0.0.1:'
+            '${server.boundPort}${TransportProtocol.peerForgotYouPath}'));
+        final encoded = utf8.encode(body);
+        req.headers.contentLength = encoded.length;
+        req.headers.contentType = ContentType.json;
+        req.add(encoded);
+        final resp = await req.close();
+        expect(resp.statusCode, HttpStatus.badRequest);
+        await resp.drain<void>();
+      } finally {
+        client.close();
+      }
+      expect(await paired.get(peer.deviceId), isNotNull);
+    });
+
+    test('a POST with a non-numeric timestamp returns 401 (audit #23)',
+        () async {
+      final token = signPeerForgotYou(
+        psk: peer.psk,
+        senderId: peer.deviceId,
+        timestampMs: clock.millisecondsSinceEpoch,
+        nonce: _freshNonce(),
+      );
+      final response = await _postPeerForgotYou(
+        port: server.boundPort!,
+        senderId: peer.deviceId,
+        timestamp: 'not-a-number',
+        nonce: token.nonce,
+        signatureBase64: token.signature,
+      );
+      expect(response.statusCode, HttpStatus.unauthorized);
+      await response.drain<void>();
+      expect(await paired.get(peer.deviceId), isNotNull);
     });
   });
 }

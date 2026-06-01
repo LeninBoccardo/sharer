@@ -255,12 +255,16 @@ class PairInviteClient {
     required String host,
     required int port,
     required String senderId,
+    required String timestamp,
+    required String nonce,
     required String signatureBase64,
     required String peerCertFingerprintSha256,
     Duration timeout = _defaultTimeout,
   }) async {
     final body = jsonEncode({
       'senderId': senderId,
+      'timestamp': timestamp,
+      'nonce': nonce,
       'signature': signatureBase64,
     });
     final useTls = _overrideHttpClient == null;

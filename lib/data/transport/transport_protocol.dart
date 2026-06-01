@@ -34,9 +34,12 @@ abstract final class TransportProtocol {
   /// device taps Forget on a paired peer, before the local removal we
   /// fire a signed POST here so the peer can reciprocally remove the
   /// PairedDevice on their side and surface a "X has unpaired you"
-  /// notification. Body shape: `{senderId, signature}`. The signature
-  /// is HMAC-SHA256 over `sharer-peer-forgot-you-v1\n<senderId>` with
-  /// the per-pair PSK — same pattern as `/pair-finalize`. The route is
+  /// notification. Body shape: `{senderId, timestamp, nonce, signature}`.
+  /// The signature is HMAC-SHA256 over
+  /// `sharer-peer-forgot-you-v2\n<senderId>\n<timestampMs>\n<nonce>` with
+  /// the per-pair PSK. Audit #23: the timestamp + nonce are validated
+  /// server-side against the same ~30 s window + nonce buffer `/upload`
+  /// uses, so a captured POST can't be replayed. The route is
   /// registered alongside `/upload`, not the pair routes, because the
   /// peer must be reachable here even on networks the receiver hasn't
   /// flagged trusted (the route still verifies HMAC against a known

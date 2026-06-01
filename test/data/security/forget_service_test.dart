@@ -51,6 +51,8 @@ void main() {
           host: any(named: 'host'),
           port: any(named: 'port'),
           senderId: any(named: 'senderId'),
+          timestamp: any(named: 'timestamp'),
+          nonce: any(named: 'nonce'),
           signatureBase64: any(named: 'signatureBase64'),
           peerCertFingerprintSha256: any(named: 'peerCertFingerprintSha256'),
         )).thenAnswer((_) async => true);
@@ -84,6 +86,8 @@ void main() {
             host: '192.168.68.56',
             port: 8080,
             senderId: identity.id,
+            timestamp: any(named: 'timestamp'),
+            nonce: any(named: 'nonce'),
             signatureBase64: any(named: 'signatureBase64'),
             peerCertFingerprintSha256: 'aa:bb:cc',
           )).called(1);
@@ -102,6 +106,8 @@ void main() {
             host: any(named: 'host'),
             port: any(named: 'port'),
             senderId: any(named: 'senderId'),
+            timestamp: any(named: 'timestamp'),
+            nonce: any(named: 'nonce'),
             signatureBase64: any(named: 'signatureBase64'),
             peerCertFingerprintSha256:
                 any(named: 'peerCertFingerprintSha256'),
@@ -125,6 +131,8 @@ void main() {
             host: any(named: 'host'),
             port: any(named: 'port'),
             senderId: any(named: 'senderId'),
+            timestamp: any(named: 'timestamp'),
+            nonce: any(named: 'nonce'),
             signatureBase64: any(named: 'signatureBase64'),
             peerCertFingerprintSha256:
                 any(named: 'peerCertFingerprintSha256'),
@@ -137,6 +145,8 @@ void main() {
             host: any(named: 'host'),
             port: any(named: 'port'),
             senderId: any(named: 'senderId'),
+            timestamp: any(named: 'timestamp'),
+            nonce: any(named: 'nonce'),
             signatureBase64: any(named: 'signatureBase64'),
             peerCertFingerprintSha256:
                 any(named: 'peerCertFingerprintSha256'),
@@ -211,6 +221,8 @@ void main() {
             host: any(named: 'host'),
             port: any(named: 'port'),
             senderId: any(named: 'senderId'),
+            timestamp: any(named: 'timestamp'),
+            nonce: any(named: 'nonce'),
             signatureBase64: any(named: 'signatureBase64'),
             peerCertFingerprintSha256:
                 any(named: 'peerCertFingerprintSha256'),

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' as developer;
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -77,6 +79,8 @@ class ForgetService {
   final _events = StreamController<ForgetEvent>.broadcast();
   Stream<ForgetEvent> get events => _events.stream;
 
+  final Random _rng = Random.secure();
+
   /// User-initiated forget. Best-effort notification + always-removes
   /// locally, regardless of whether the peer was reachable.
   Future<void> forgetPeer(PairedDevice peer) async {
@@ -90,13 +94,24 @@ class ForgetService {
     // freeze the UI.
     if (host != null && fingerprint != null && fingerprint.isNotEmpty) {
       final identity = await _identityRepo.get();
-      final sig = signPeerForgotYou(psk: peer.psk, senderId: identity.id);
+      // Audit #23: bind a fresh timestamp + nonce so the signed POST can't
+      // be captured and replayed against this peer later.
+      final timestampMs = DateTime.now().toUtc().millisecondsSinceEpoch;
+      final nonce = _generateNonce();
+      final token = signPeerForgotYou(
+        psk: peer.psk,
+        senderId: identity.id,
+        timestampMs: timestampMs,
+        nonce: nonce,
+      );
       unawaited(
         _client.postPeerForgotYou(
           host: host,
           port: port ?? TransportProtocol.defaultPort,
           senderId: identity.id,
-          signatureBase64: sig,
+          timestamp: token.timestamp,
+          nonce: token.nonce,
+          signatureBase64: token.signature,
           peerCertFingerprintSha256: fingerprint,
         ),
       );
@@ -139,6 +154,16 @@ class ForgetService {
 
   Future<void> dispose() async {
     await _events.close();
+  }
+
+  /// 128-bit base64 nonce for a peer-forgot-you POST. Cryptographically
+  /// random (Random.secure) — same construction as [HmacSigner].
+  String _generateNonce() {
+    final bytes = Uint8List(16);
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = _rng.nextInt(256);
+    }
+    return base64Encode(bytes);
   }
 
   void _log(String message) {
