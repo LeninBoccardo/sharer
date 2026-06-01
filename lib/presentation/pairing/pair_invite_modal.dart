@@ -58,6 +58,17 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
   late PairInvite _current;
   bool _busy = false;
 
+  /// Guards against a double close. Audit #6: the decline path used to
+  /// fire two independent closes — the `declined` stream status drives
+  /// `_toastAndClose` via the `ref.listen` block AND `_finalize` called
+  /// it again after the await. The second `Navigator.pop()` popped the
+  /// route underneath the dismissed modal and stacked a duplicate
+  /// snackbar. `_finalize` no longer closes (the stream listener is the
+  /// single source of truth); this flag is belt-and-suspenders so any
+  /// second `_toastAndClose` (e.g. a late `expired` after `completed`)
+  /// is a no-op.
+  bool _closed = false;
+
   @override
   void initState() {
     super.initState();
@@ -179,15 +190,18 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-    if (!match && mounted) {
-      // Decline closes immediately; match keeps the modal up while we
-      // wait for the peer's verdict.
-      _toastAndClose('Pairing cancelled.');
-    }
+    // Audit #6: do NOT close here. `controller.finalize(match: false)`
+    // emits `PairInviteStatus.declined` onto pairInviteStreamProvider,
+    // and the `ref.listen` block above is the single source of truth
+    // that calls `_toastAndClose('Pairing cancelled.')`. Closing again
+    // here double-popped the navigator + stacked a duplicate snackbar.
+    // Match likewise keeps the modal up until the stream reports
+    // `completed`, so both verdicts now close via the same path.
   }
 
   void _toastAndClose(String message, {bool success = false}) {
-    if (!mounted) return;
+    if (_closed || !mounted) return;
+    _closed = true;
     Navigator.of(context, rootNavigator: true).pop();
     final messenger = ScaffoldMessenger.maybeOf(context);
     messenger?.showSnackBar(SnackBar(content: Text(message)));
