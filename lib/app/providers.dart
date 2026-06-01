@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
@@ -276,7 +277,14 @@ final peerDiscoveryProvider = Provider<PeerDiscoveryRepository>((ref) {
     isTrusted: ref.watch(networkWatcherProvider).watchIsTrusted(),
   );
   ref.onDispose(discovery.dispose);
-  discovery.start();
+  // Audit #21: browsers have no raw sockets and no mDNS, so there is
+  // nothing for discovery to do on web. Skip start() so we never wire the
+  // trust-stream subscription (and never touch the bonsoir backend).
+  // kIsWeb is a compile-time const — false on every native platform, so
+  // this branch folds out and native stays byte-identical. The provider
+  // still returns the (idle) discovery object so peersStreamProvider /
+  // peerAnnouncingProvider resolve and emit their empty seeds.
+  if (!kIsWeb) discovery.start();
   return discovery;
 });
 

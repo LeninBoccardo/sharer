@@ -42,6 +42,15 @@ class NetworkWatcherImpl implements NetworkWatcherRepository {
 
   NetworkWatcherImpl(this._source, this._trusted) {
     _trustedCache = _trusted.load();
+    // Audit #21: on web there is no Wi-Fi/Ethernet introspection worth
+    // sampling (network_info_plus has no real web support) and a 30 s
+    // recurring poll would violate the near-zero-background-cost
+    // principle. Skip the connectivity subscription, the periodic resample
+    // timer, and the initial read. _latest stays null and _evaluateTrust()
+    // stays false — the correct web posture (never trusted -> discovery
+    // never announces/observes). kIsWeb is a compile-time const, false on
+    // every native platform, so this branch folds out on native.
+    if (kIsWeb) return;
     _sub = _source.connectivityChanges().listen((_) => _refresh());
     _periodicTimer = Timer.periodic(_periodicResample, (_) => _refresh());
     // Initial sample so consumers don't have to wait for the first change.
