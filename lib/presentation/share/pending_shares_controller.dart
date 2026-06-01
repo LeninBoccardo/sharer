@@ -84,20 +84,40 @@ class PendingSharesController {
     } catch (_) {/* never fail startup for opportunistic cleanup */}
   }
 
-  /// Called after the home screen has handed the files off to a
-  /// transfer (or the user dismissed the banner). Best-effort cleanup
-  /// of the cached files we copied onto disk.
-  Future<void> clear() async {
-    final toDelete = _state.files;
+  /// Resets pending state to empty (banner disappears, tap reverts to
+  /// the picker flow) and returns the paths that were pending. Deletes
+  /// NOTHING — callers that own a copy of the files (the share path,
+  /// whose upload streams open the cached file lazily, well after this
+  /// returns) must defer deletion until the transfer has drained the
+  /// file. See [deleteFiles] and audit #5.
+  List<String> clearState() {
+    final paths = [for (final f in _state.files) f.path];
     _emit(PendingShares.empty);
-    for (final f in toDelete) {
+    return paths;
+  }
+
+  /// Best-effort deletion of cached share_* temp files by path. Safe to
+  /// call after a transfer has finished reading them. Never throws — a
+  /// missing or locked file just falls through to the OS reaper.
+  Future<void> deleteFiles(Iterable<String> paths) async {
+    for (final path in paths) {
       try {
-        final file = File(f.path);
+        final file = File(path);
         if (await file.exists()) await file.delete();
       } catch (_) {
         // Cache files; the OS will reap them eventually.
       }
     }
+  }
+
+  /// Called when the user dismisses the banner without sending: resets
+  /// state AND eagerly deletes the cached files. Safe here because no
+  /// transfer is reading them. The share path must NOT use this — it
+  /// uses [clearState] + a deferred [deleteFiles] so the upload stream
+  /// can still open the file (audit #5).
+  Future<void> clear() async {
+    final paths = clearState();
+    await deleteFiles(paths);
   }
 
   void _emit(PendingShares next) {

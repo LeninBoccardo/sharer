@@ -94,6 +94,37 @@ void main() {
     expect(File(f.path).existsSync(), isFalse);
   });
 
+  test('clearState empties state but does NOT delete the cached files '
+      '(audit #5 deferred delete)', () async {
+    final f = _file(tmp, 'a.txt');
+    service.initial = [f];
+    await controller.start();
+    expect(File(f.path).existsSync(), isTrue);
+
+    final paths = controller.clearState();
+
+    expect(controller.state.isEmpty, isTrue);
+    expect(paths, [f.path]);
+    expect(File(f.path).existsSync(), isTrue,
+        reason: 'clearState must leave the file for the in-flight upload');
+  });
+
+  test('deleteFiles removes the given cached files', () async {
+    final f = _file(tmp, 'a.txt');
+    service.initial = [f];
+    await controller.start();
+    final paths = controller.clearState();
+
+    await controller.deleteFiles(paths);
+
+    expect(File(f.path).existsSync(), isFalse);
+  });
+
+  test('deleteFiles tolerates a missing path', () async {
+    await controller.deleteFiles(['${tmp.path}/does-not-exist.bin']);
+    // No throw == pass.
+  });
+
   test('emitting an empty batch is a no-op (does not bump the state)',
       () async {
     await controller.start();

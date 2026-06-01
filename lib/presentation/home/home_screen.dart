@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -10,11 +11,13 @@ import '../../data/share/incoming_share_service.dart';
 import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
+import '../../domain/repositories/transfer_service.dart';
 import '../diagnostics/diagnostics_screen.dart';
 import '../pairing/devices_screen.dart';
 import '../../data/security/invite_controller.dart';
 import '../pairing/pair_invite_modal.dart';
 import '../pairing/show_pair_screen.dart';
+import '../share/pending_shares_controller.dart';
 import '../share/share_pending_banner.dart';
 import '../transfers/transfers_section.dart';
 import 'battery_optimization_banner.dart';
@@ -242,12 +245,16 @@ class _PeerTile extends ConsumerWidget {
     List<IncomingSharedFile> files,
   ) async {
     final transferService = ref.read(transferServiceProvider);
+    final pendingController = ref.read(pendingSharesControllerProvider);
     var queued = 0;
     var skipped = 0;
+    final deleteImmediately = <String>[];
     for (final shared in files) {
       try {
         final file = File(shared.path);
         if (!await file.exists()) {
+          // Nothing to drain — safe to drop the (already-missing) path.
+          deleteImmediately.add(shared.path);
           skipped++;
           continue;
         }
@@ -257,15 +264,31 @@ class _PeerTile extends ConsumerWidget {
           bytes: file.openRead(),
           mimeType: shared.mimeType ?? lookupMimeType(shared.name),
         );
-        await transferService.send(peer: peer, file: payload);
+        // Audit #5: send() is fire-and-forget and opens file.openRead()
+        // lazily, deep inside the upload after the TLS handshake. We must
+        // NOT delete the cached file until the transfer has drained it,
+        // so defer the delete until this transfer reaches a terminal
+        // status (completed/failed) on watchAll().
+        final transfer = await transferService.send(peer: peer, file: payload);
+        unawaited(_deleteWhenDrained(
+          transferService,
+          pendingController,
+          transfer.id,
+          shared.path,
+        ));
         queued++;
       } catch (_) {
+        // Wrapping/queuing failed before the stream was handed off, so
+        // nothing will read the file — drop it now.
+        deleteImmediately.add(shared.path);
         skipped++;
       }
     }
-    // Clear regardless — files have either been queued (their stream
-    // is opened against the cached temp file) or genuinely missing.
-    await ref.read(pendingSharesControllerProvider).clear();
+    // Reset the banner/pending state immediately so the UI flow proceeds,
+    // but leave queued files on disk for their deferred per-transfer
+    // delete. Eagerly reap only files never handed to a transfer.
+    pendingController.clearState();
+    await pendingController.deleteFiles(deleteImmediately);
     if (!context.mounted) return;
     if (queued == 0) {
       _toast(context, 'Could not send shared files.');
@@ -278,6 +301,32 @@ class _PeerTile extends ConsumerWidget {
         '${skipped > 0 ? ' ($skipped skipped)' : ''}…',
       );
     }
+  }
+
+  /// Audit #5: wait for [transferId] to reach a terminal status on the
+  /// transfer stream, then delete the cached share file. Terminal status
+  /// is a safe "file fully read" signal: TransferServiceImpl marks
+  /// `completed` only after the upload stream is drained, and `failed`
+  /// (and `cancelled`) only after the upload future settles — no further
+  /// reads happen past either. Best-effort: if the stream closes (app
+  /// teardown) before a terminal status, deleteFiles still runs so we
+  /// don't leak the cache.
+  Future<void> _deleteWhenDrained(
+    TransferService transferService,
+    PendingSharesController pendingController,
+    String transferId,
+    String path,
+  ) async {
+    try {
+      await for (final transfers in transferService.watchAll()) {
+        final t = transfers.where((t) => t.id == transferId).firstOrNull;
+        if (t != null && t.isTerminal) break;
+      }
+    } catch (_) {
+      // Fall through to delete regardless — a stream error means the
+      // upload is no longer running against the file.
+    }
+    await pendingController.deleteFiles([path]);
   }
 
   Future<void> _showPairFirstSheet(BuildContext context, WidgetRef ref) async {
