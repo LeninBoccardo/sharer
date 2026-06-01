@@ -100,6 +100,8 @@ void main() {
       responderEphemeralPublicKey: r.accepted.responderEphemeralPublicKey,
       responderCertFingerprintSha256:
           r.accepted.responderCertFingerprintSha256,
+      observedCertFingerprintSha256:
+          r.accepted.responderCertFingerprintSha256,
       signature: r.accepted.signature,
     );
     expect(completed, isA<PairInviteReady>());

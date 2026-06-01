@@ -98,6 +98,7 @@ void main() {
       responderPublicKey: ok.responderPublicKey,
       responderEphemeralPublicKey: ok.responderEphemeralPublicKey,
       responderCertFingerprintSha256: ok.responderCertFingerprintSha256,
+      observedCertFingerprintSha256: ok.responderCertFingerprintSha256,
       signature: ok.signature,
     );
     expect(completed, isA<PairInviteReady>(),
@@ -420,9 +421,78 @@ void main() {
       responderPublicKey: acc.responderPublicKey,
       responderEphemeralPublicKey: acc.responderEphemeralPublicKey,
       responderCertFingerprintSha256: acc.responderCertFingerprintSha256,
+      observedCertFingerprintSha256: acc.responderCertFingerprintSha256,
       signature: acc.signature,
     );
     expect(result, isA<PairInviteCompleteRejected>());
+  });
+
+  test('completeInvite rejects when observed TLS cert fingerprint differs '
+      'from the signed claim (audit #15 MITM relay)', () async {
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
+    final acc = (await b.acceptInvite(
+      inviteId: payload.inviteId,
+      initiatorId: payload.initiatorId,
+      initiatorName: payload.initiatorName,
+      initiatorPublicKey: payload.initiatorPublicKey,
+      initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
+      nonce: payload.nonce,
+      signature: payload.signature,
+      expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
+    )) as PairInviteAccepted;
+
+    // Responder signed _idBCertFp, but the cert actually presented on the
+    // wire (observed) was a DIFFERENT fingerprint — the relay-MITM shape.
+    final result = await a.completeInvite(
+      inviteId: payload.inviteId,
+      responderId: acc.responderId,
+      responderName: acc.responderName,
+      responderPublicKey: acc.responderPublicKey,
+      responderEphemeralPublicKey: acc.responderEphemeralPublicKey,
+      responderCertFingerprintSha256: acc.responderCertFingerprintSha256,
+      observedCertFingerprintSha256: _idACertFp, // != signed claim
+      signature: acc.signature,
+    );
+    expect(result, isA<PairInviteCompleteRejected>());
+    expect(await pairedA.getAll(), isEmpty);
+  });
+
+  test('completeInvite rejects when no TLS cert was observed (audit #15)',
+      () async {
+    final payload = await a.createInvite(
+      responderId: idB.id,
+      localCertFingerprintSha256: _idACertFp,
+    );
+    final acc = (await b.acceptInvite(
+      inviteId: payload.inviteId,
+      initiatorId: payload.initiatorId,
+      initiatorName: payload.initiatorName,
+      initiatorPublicKey: payload.initiatorPublicKey,
+      initiatorEphemeralPublicKey: payload.initiatorEphemeralPublicKey,
+      initiatorCertFingerprintSha256: payload.initiatorCertFingerprintSha256,
+      nonce: payload.nonce,
+      signature: payload.signature,
+      expiresAt: payload.expiresAt,
+      localCertFingerprintSha256: _idBCertFp,
+    )) as PairInviteAccepted;
+
+    final result = await a.completeInvite(
+      inviteId: payload.inviteId,
+      responderId: acc.responderId,
+      responderName: acc.responderName,
+      responderPublicKey: acc.responderPublicKey,
+      responderEphemeralPublicKey: acc.responderEphemeralPublicKey,
+      responderCertFingerprintSha256: acc.responderCertFingerprintSha256,
+      observedCertFingerprintSha256: null,
+      signature: acc.signature,
+    );
+    expect(result, isA<PairInviteCompleteRejected>());
+    expect(await pairedA.getAll(), isEmpty);
   });
 
   test('markLocalMatched emits localMatched on the stream so the modal '
@@ -598,6 +668,7 @@ void main() {
       responderPublicKey: ok.responderPublicKey,
       responderEphemeralPublicKey: ok.responderEphemeralPublicKey,
       responderCertFingerprintSha256: ok.responderCertFingerprintSha256,
+      observedCertFingerprintSha256: ok.responderCertFingerprintSha256,
       signature: ok.signature,
     );
     final aDecline = await a.markLocalDeclined(payload.inviteId);
@@ -691,6 +762,7 @@ Future<({PairInvite aInvite, PairInvite bInvite, String inviteId})>
     responderPublicKey: acc.responderPublicKey,
     responderEphemeralPublicKey: acc.responderEphemeralPublicKey,
     responderCertFingerprintSha256: acc.responderCertFingerprintSha256,
+    observedCertFingerprintSha256: acc.responderCertFingerprintSha256,
     signature: acc.signature,
   );
   await pumpEventQueue();

@@ -17,6 +17,7 @@ class PairInviteResponse {
     required this.responderPublicKey,
     required this.responderEphemeralPublicKey,
     required this.responderCertFingerprintSha256,
+    required this.observedCertFingerprintSha256,
     required this.signature,
   });
 
@@ -24,7 +25,21 @@ class PairInviteResponse {
   final String responderName;
   final Uint8List responderPublicKey;
   final Uint8List responderEphemeralPublicKey;
+
+  /// Cert fingerprint the responder *claims* (from the Ed25519-signed
+  /// JSON body). Pinned onto the resulting PairedDevice.
   final String responderCertFingerprintSha256;
+
+  /// Audit #15: cert fingerprint actually presented on the TLS connection
+  /// this response came back over, captured via the TOFU sink.
+  /// [PairInviteService.completeInvite] asserts this equals
+  /// [responderCertFingerprintSha256] before persisting — without it a LAN
+  /// MITM could relay the genuine signed payload while presenting its own
+  /// cert, leaving the victim pinning a fingerprint it never spoke TLS to.
+  /// Null only when no TLS handshake observed the cert (e.g. the test-only
+  /// plain HttpClient override path).
+  final String? observedCertFingerprintSha256;
+
   final Uint8List signature;
 }
 
@@ -112,12 +127,17 @@ class PairInviteClient {
     final uri = Uri.parse('$scheme://$host:$port'
         '${TransportProtocol.pairInvitePath}');
     _log('POST $uri inviteId=$inviteId');
+    // Audit #15: capture (not discard) the cert fingerprint actually
+    // presented on the TLS handshake. The TOFU callback may fire more than
+    // once per handshake, but every call carries the same fingerprint for
+    // a given connection — last-write-wins is fine.
+    // [PairInviteService.completeInvite] asserts this equals the signed
+    // `responderCertFingerprint` before persisting, so a MITM presenting
+    // its own cert while relaying the genuine payload is rejected.
+    String? observedFingerprint;
     final http = _overrideHttpClient ??
-        // TOFU: accept whatever cert the responder presents; the
-        // payload's `responderCertFingerprint` is signed by their
-        // Ed25519 so [PairInviteService.completeInvite] verifies the
-        // match and rejects on tamper.
-        buildPinningHttpClient(tofuSink: (_, _, _) {});
+        buildPinningHttpClient(
+            tofuSink: (_, _, fp) => observedFingerprint = fp);
     final ownsClient = _overrideHttpClient == null;
     try {
       final req = await http.postUrl(uri).timeout(timeout);
@@ -151,6 +171,7 @@ class PairInviteClient {
           responderPublicKey: pub,
           responderEphemeralPublicKey: eph,
           responderCertFingerprintSha256: certFp,
+          observedCertFingerprintSha256: observedFingerprint,
           signature: sig,
         ));
       } catch (e) {

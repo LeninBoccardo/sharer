@@ -123,6 +123,8 @@ void main() {
       responderEphemeralPublicKey: ok.response.responderEphemeralPublicKey,
       responderCertFingerprintSha256:
           ok.response.responderCertFingerprintSha256,
+      observedCertFingerprintSha256:
+          ok.response.observedCertFingerprintSha256,
       signature: ok.response.signature,
     );
     expect(completed, isA<PairInviteReady>());

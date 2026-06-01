@@ -337,6 +337,7 @@ class PairInviteService {
     required Uint8List responderPublicKey,
     required Uint8List responderEphemeralPublicKey,
     required String responderCertFingerprintSha256,
+    required String? observedCertFingerprintSha256,
     required Uint8List signature,
   }) async {
     _purgeExpired();
@@ -361,6 +362,22 @@ class PairInviteService {
     if (responderCertFingerprintSha256.isEmpty) {
       _log('completeInvite reject: missing cert fingerprint id=$inviteId');
       return PairInviteCompleteRejected('missing cert fingerprint');
+    }
+    // Audit #15: the fingerprint the responder *signed* must equal the
+    // cert actually presented on the TLS connection we spoke over. The
+    // TOFU sink captured `observed`; if they differ, a LAN MITM presented
+    // its own cert while relaying the genuine signed payload — pinning the
+    // claimed fingerprint would leave us talking TLS to the attacker.
+    // Reject before deriving the PSK. A null observed value means no TLS
+    // handshake was inspected (test-only plain HttpClient override); the
+    // real PairInviteClient always captures over TLS, so null is a reject.
+    if (observedCertFingerprintSha256 == null ||
+        !_equalsIgnoreCase(
+            observedCertFingerprintSha256, responderCertFingerprintSha256)) {
+      _log('completeInvite reject: presented cert fingerprint '
+          '($observedCertFingerprintSha256) does not match signed claim '
+          '($responderCertFingerprintSha256) id=$inviteId');
+      return PairInviteCompleteRejected('cert fingerprint mismatch');
     }
     final canonical = _responseCanonical(
       inviteId: inviteId,
@@ -907,6 +924,23 @@ String _hex(List<int> bytes) {
     buf.write((b & 0xff).toRadixString(16).padLeft(2, '0'));
   }
   return buf.toString();
+}
+
+/// Case-insensitive ASCII equality for cert fingerprints. These are public
+/// (not secret) values, so no constant-time guarantee is needed;
+/// case-insensitivity mirrors `buildPinningHttpClient`'s own pin compare
+/// so an upper/lower-cased fingerprint never spuriously rejects.
+bool _equalsIgnoreCase(String a, String b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    final ca = a.codeUnitAt(i);
+    final cb = b.codeUnitAt(i);
+    if (ca == cb) continue;
+    final la = (ca >= 0x41 && ca <= 0x5A) ? ca + 0x20 : ca;
+    final lb = (cb >= 0x41 && cb <= 0x5A) ? cb + 0x20 : cb;
+    if (la != lb) return false;
+  }
+  return true;
 }
 
 // Public re-exports for tests and the wire client.

@@ -108,6 +108,8 @@ class InviteController {
           responderEphemeralPublicKey: response.responderEphemeralPublicKey,
           responderCertFingerprintSha256:
               response.responderCertFingerprintSha256,
+          observedCertFingerprintSha256:
+              response.observedCertFingerprintSha256,
           signature: response.signature,
         );
         switch (completed) {
