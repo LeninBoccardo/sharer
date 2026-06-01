@@ -44,6 +44,17 @@ class ForegroundServiceController {
       await _gateway.init();
       _initialised = true;
     }
+    // Seed the edge detector from the platform's ACTUAL service state.
+    // This controller reacts only to EDGES of the paired-count stream.
+    // If it assumes "not running" but the service was actually already
+    // up — an orphaned FG service the OS restarted, or a stale service
+    // from a prior session — while the user now has zero pairs, the
+    // first empty emission would be a false==false no-op and the
+    // orphan would never be stopped, draining battery and showing a
+    // misleading idle notification (audit #3). Seeding from isRunning()
+    // turns that first empty emission into a true→false edge that
+    // correctly stops the service.
+    _previousNonEmpty = await _gateway.isRunning();
     _sub = _pairedDevices.listen(_onPairedDevices);
     _log('controller started');
   }

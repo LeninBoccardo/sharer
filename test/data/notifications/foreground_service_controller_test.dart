@@ -7,8 +7,10 @@ import 'package:sharer/data/notifications/foreground_service_gateway.dart';
 import 'package:sharer/domain/entities/paired_device.dart';
 
 class _FakeGateway implements ForegroundServiceGateway {
+  _FakeGateway({bool running = false}) : _running = running;
+
   final calls = <String>[];
-  bool _running = false;
+  bool _running;
 
   @override
   Future<void> init() async {
@@ -116,6 +118,38 @@ void main() {
       stream.add([]);
       await pumpEventQueue();
       expect(gateway.calls.last, 'stop');
+    });
+
+    test('seeds running state: empty first emission STOPS an orphaned '
+        'service (e.g. OS-restarted FG service with zero pairs)', () async {
+      // Simulate a foreground service that is already running at app
+      // start while the user has no pairs left — the audit #3 orphan
+      // scenario. The controller must detect this and stop it.
+      gateway = _FakeGateway(running: true);
+      controller = ForegroundServiceController(
+        pairedDevices: stream.stream,
+        gateway: gateway,
+      );
+      await controller.start();
+      stream.add([]);
+      await pumpEventQueue();
+      expect(gateway.calls, ['init', 'stop']);
+    });
+
+    test('seeds running state: non-empty first emission while already '
+        'running is a no-op (service already up with the right notif)',
+        () async {
+      gateway = _FakeGateway(running: true);
+      controller = ForegroundServiceController(
+        pairedDevices: stream.stream,
+        gateway: gateway,
+      );
+      await controller.start();
+      stream.add([_device('a', 'A')]);
+      await pumpEventQueue();
+      // Already running + still have pairs == no edge, so no redundant
+      // start/update call.
+      expect(gateway.calls, ['init']);
     });
 
     test('count change while non-empty does NOT re-update the notification '
