@@ -386,6 +386,66 @@ void main() {
       expect(await second.readAsString(), 'second');
     });
 
+    test('concurrent uploads of the same filename do not clobber '
+        '(TOCTOU, audit #11)', () async {
+      final f = await _setupSigned();
+      addTearDown(() async {
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
+      });
+
+      await f.server.start();
+      f.trust.add(true);
+      await _settle();
+
+      final port = f.server.boundPort!;
+      // Large bodies (> _progressThresholdBytes) widen the race window.
+      final body1 = utf8.encode('A' * (400 * 1024));
+      final body2 = utf8.encode('B' * (400 * 1024));
+
+      // Fire both WITHOUT awaiting the first, so they interleave on the
+      // server and exercise the create-exclusive reservation race.
+      final responses = await Future.wait([
+        _postSignedUpload(
+          port: port,
+          signer: f.signer,
+          signWithPsk: f.peer.psk,
+          encryptWithPsk: f.peer.psk,
+          senderId: f.peer.deviceId,
+          senderName: f.peer.displayName,
+          fileName: 'clash.txt',
+          body: body1,
+        ),
+        _postSignedUpload(
+          port: port,
+          signer: f.signer,
+          signWithPsk: f.peer.psk,
+          encryptWithPsk: f.peer.psk,
+          senderId: f.peer.deviceId,
+          senderName: f.peer.displayName,
+          fileName: 'clash.txt',
+          body: body2,
+        ),
+      ]);
+      for (final r in responses) {
+        expect(r.statusCode, HttpStatus.ok);
+        await r.drain<void>();
+      }
+      await _settle();
+
+      final files = f.dir.listSync().whereType<File>().toList();
+      expect(files, hasLength(2),
+          reason: 'two same-name uploads must yield two distinct files');
+      expect(files.map((e) => e.uri.pathSegments.last).toSet(),
+          {'clash.txt', 'clash (1).txt'});
+      final contents = files.map((e) => e.readAsStringSync()).toList()..sort();
+      final expected = [utf8.decode(body1), utf8.decode(body2)]..sort();
+      expect(contents, expected,
+          reason: 'neither body was clobbered or truncated');
+    });
+
     test('sanitizes path-traversal attempts in the filename header',
         () async {
       final f = await _setupSigned();

@@ -820,20 +820,57 @@ class HttpFileServer {
 
   /// If `foo.txt` exists in [dir], returns `foo (1).txt`, then
   /// `foo (2).txt`, etc. Avoids clobbering existing downloads.
+  ///
+  /// Audit #11 (TOCTOU): the returned [File] is **atomically reserved**,
+  /// not merely probed. A plain `exists()` check leaves a window between
+  /// path selection and the later `openWrite()` (default `FileMode.write`
+  /// = truncate) in which two concurrent uploads of the same sanitized
+  /// name both see the candidate as free, resolve to the identical path,
+  /// and the second clobbers the first. Instead we create each candidate
+  /// with `exclusive: true` (O_EXCL): the create *is* the selection, so
+  /// it fails the moment another upload has already claimed that name.
+  /// The reserved file is empty; the caller's `openWrite()` then opens it
+  /// (truncating an empty file is a no-op) and streams the body in.
   Future<File> _resolveUniqueDestination(Directory dir, String name) async {
-    var candidate = File('${dir.path}${Platform.pathSeparator}$name');
-    if (!await candidate.exists()) return candidate;
+    final first = File('${dir.path}${Platform.pathSeparator}$name');
+    if (await _tryReserve(first)) return first;
 
     final dot = name.lastIndexOf('.');
     final stem = dot > 0 ? name.substring(0, dot) : name;
     final ext = dot > 0 ? name.substring(dot) : '';
 
     for (var i = 1; i < 10000; i++) {
-      candidate = File('${dir.path}${Platform.pathSeparator}$stem ($i)$ext');
-      if (!await candidate.exists()) return candidate;
+      final candidate =
+          File('${dir.path}${Platform.pathSeparator}$stem ($i)$ext');
+      if (await _tryReserve(candidate)) return candidate;
     }
-    // Extremely unlikely fallback — append a random tag.
-    return File('${dir.path}${Platform.pathSeparator}$stem-${_uuid.v4()}$ext');
+    // Extremely unlikely fallback — a random tag is collision-proof in
+    // practice, but still reserve it exclusively for consistency.
+    final fallback =
+        File('${dir.path}${Platform.pathSeparator}$stem-${_uuid.v4()}$ext');
+    await _tryReserve(fallback);
+    return fallback;
+  }
+
+  /// Atomically claim [candidate] by creating it with `exclusive: true`
+  /// (O_EXCL). Returns true when this call won the race and created the
+  /// (empty) file; false when the name is already taken. A genuine
+  /// filesystem error (permission denied, disk full, bad path) is
+  /// rethrown so the upload fails fast instead of silently churning
+  /// through every suffix.
+  static Future<bool> _tryReserve(File candidate) async {
+    try {
+      await candidate.create(exclusive: true);
+      return true;
+    } on FileSystemException {
+      // EEXIST is the expected collision; anything else (and we can't
+      // portably read the OS errno) we disambiguate by re-checking
+      // existence — a name that now exists was a real collision, retry
+      // the next suffix; otherwise the create failed for another reason
+      // and we must not mask it.
+      if (await candidate.exists()) return false;
+      rethrow;
+    }
   }
 
   void _log(String message) {
