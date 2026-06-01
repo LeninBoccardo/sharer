@@ -102,8 +102,11 @@ class IncomingShareService {
     // The MethodChannel only exists on Android (MainActivity is the
     // Android-only entry point). Calling invokeMethod on other
     // platforms would throw MissingPluginException; cheaper to
-    // short-circuit here.
-    return Platform.isAndroid;
+    // short-circuit here. On Flutter web there is no dart:io, so reading
+    // Platform.isAndroid throws UnsupportedError — kIsWeb is a
+    // compile-time constant that short-circuits before that read (audit
+    // #7). On native, kIsWeb==false folds this back to Platform.isAndroid.
+    return !kIsWeb && Platform.isAndroid;
   }
 
   static List<IncomingSharedFile>? _parse(dynamic raw) {

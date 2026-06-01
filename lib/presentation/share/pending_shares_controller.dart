@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path_provider/path_provider.dart';
 
 import '../../data/share/incoming_share_service.dart';
@@ -59,7 +60,7 @@ class PendingSharesController {
     // The OS reclaims under pressure but a 4 GB shared video can sit
     // for weeks. Don't await — fire and forget so startup isn't
     // blocked by stat calls.
-    if (Platform.isAndroid) {
+    if (!kIsWeb && Platform.isAndroid) {
       unawaited(_sweepStaleShareCache());
     }
   }
