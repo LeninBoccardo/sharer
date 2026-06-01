@@ -186,8 +186,44 @@ void main() {
     });
   });
 
-  test('newTransferId is always exactly 8 bytes', () {
-    expect(newTransferId(Random(1)).length, 8);
-    expect(newTransferId(Random(99)).length, 8);
+  test('newTransferId is always exactly 12 bytes (audit #12: 96-bit '
+      'salt collision space)', () {
+    expect(newTransferId(Random(1)).length, 12);
+    expect(newTransferId(Random(99)).length, 12);
+  });
+
+  test('derive rejects a transferId that is not exactly 12 bytes', () {
+    expect(
+      () => TransferCipher.derive(psk: _psk(1), transferId: _bytes(8)),
+      throwsA(isA<ArgumentError>()),
+    );
+    expect(
+      () => TransferCipher.derive(psk: _psk(1), transferId: _bytes(16)),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
+
+  test('two transferIds whose first 8 bytes collide but bytes 8..11 differ '
+      'still round-trip independently (nonce-prefix collision is harmless '
+      'because the HKDF key differs)', () async {
+    final psk = _psk(5);
+    final idA = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0]);
+    final idB = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 9]);
+    final cipherA = await TransferCipher.derive(psk: psk, transferId: idA);
+    final cipherB = await TransferCipher.derive(psk: psk, transferId: idB);
+    final plaintext = _bytes(200, 3);
+    final wireA = await _drain(cipherA.encrypt(Stream.value(plaintext)));
+    final wireB = await _drain(cipherB.encrypt(Stream.value(plaintext)));
+    // Same plaintext + colliding nonce prefix but different salt => the two
+    // ciphertexts must NOT be identical (would prove key+nonce reuse).
+    expect(wireA, isNot(equals(wireB)));
+    // A's wire must not decrypt under B's key (different HKDF key).
+    expect(
+      () => _drain(cipherB.decrypt(Stream.value(wireA))),
+      throwsA(isA<FormatException>()),
+    );
+    // Each still round-trips under its own key.
+    expect(await _drain(cipherA.decrypt(Stream.value(wireA))), plaintext);
+    expect(await _drain(cipherB.decrypt(Stream.value(wireB))), plaintext);
   });
 }

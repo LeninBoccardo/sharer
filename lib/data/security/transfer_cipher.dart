@@ -14,7 +14,7 @@ import 'package:cryptography_plus/cryptography_plus.dart';
 ///   transferKey = HKDF-SHA256(PSK, salt=transferId, info="sharer-transfer-v1", 32 bytes)
 ///
 /// For each chunk i:
-///   nonce       = transferId(8B) ‖ chunkIndex(4B)            // 12 bytes
+///   nonce       = transferId[0:8] ‖ chunkIndex(4B)         // 12 bytes
 ///   aad         = nonce                                      // bound into tag
 ///   ciphertext  = AES-256-GCM(transferKey, nonce, plaintext, aad)
 ///   wire frame  = chunkIndex(4B BE) ‖ cipherLen(4B BE) ‖ ciphertext+tag(N+16B)
@@ -49,8 +49,15 @@ const int _frameHeaderBytes = 8;
 /// AES-256-GCM authentication tag length (fixed by the spec).
 const int _gcmTagBytes = 16;
 
-/// AES-GCM nonce length (fixed by the spec). transferId(8B) ‖ chunkIndex(4B).
+/// AES-GCM nonce length (fixed by the spec). transferId[0:8] ‖ chunkIndex(4B).
 const int _nonceBytes = 12;
+
+/// Bytes of the transferId mixed into the GCM nonce prefix. The nonce is
+/// the spec-fixed 12 bytes (8-byte id prefix + 4-byte chunkIndex), so this
+/// MUST stay 8 even though the full transferId is wider — see
+/// [_transferIdBytes]. The remaining transferId bytes only widen the HKDF
+/// salt's collision space; they never enter the nonce.
+const int _nonceIdPrefixBytes = 8;
 
 /// Cap on a single ciphertext+tag length on the wire. Chosen so a
 /// malicious peer can't trick the receiver into allocating a huge buffer
@@ -58,8 +65,18 @@ const int _nonceBytes = 12;
 /// arithmetic so a future chunk-size bump moves both consts in lockstep.
 const int _maxCipherFrameBytes = kPlaintextChunkSize + _gcmTagBytes;
 
-/// HKDF salt = transferId. transferId is 8 random bytes per send.
-const int _transferIdBytes = 8;
+/// HKDF salt = transferId. transferId is 12 random bytes per send.
+///
+/// Widened from 8 to 12 bytes (audit #12): with an 8-byte id the HKDF
+/// key (salt=transferId) AND the GCM nonce prefix both collide together
+/// at a ~2^32 birthday bound, which is fatal key+nonce reuse for GCM. At
+/// 12 bytes the full-id collision bound is ~2^48, and only the first 8
+/// bytes feed the nonce ([_nonceIdPrefixBytes]) — so a 2^32 nonce-prefix
+/// collision lands on a DIFFERENT HKDF key (salt bytes 8..11 differ) and
+/// is therefore harmless. Joint key+nonce reuse now needs a full 12-byte
+/// collision, which is unreachable. This changes the wire transferId
+/// length (16 base64 chars instead of 12); both peers update together.
+const int _transferIdBytes = 12;
 
 /// Length on the wire for a plaintext payload of [plaintextSize] bytes
 /// when run through [TransferCipher.encrypt]. Used by the sender to set
@@ -75,7 +92,7 @@ int encryptedLengthFor(int plaintextSize) {
   return chunkCount * (_frameHeaderBytes + _gcmTagBytes) + plaintextSize;
 }
 
-/// Generate a fresh 8-byte transferId. Caller passes a [Random.secure]
+/// Generate a fresh 12-byte transferId. Caller passes a [Random.secure]
 /// in production; tests can pass a seeded [Random] for determinism.
 Uint8List newTransferId([Random? random]) {
   final r = random ?? Random.secure();
@@ -158,7 +175,7 @@ class TransferCipher {
   TransferCipher._(this._key, this._transferId, this._gcm);
 
   /// Derive a per-transfer cipher from the long-term per-pair PSK and the
-  /// fresh per-transfer id. transferId is 8 random bytes the sender
+  /// fresh per-transfer id. transferId is 12 random bytes the sender
   /// generates and ships in `X-Sharer-TransferId`.
   static Future<TransferCipher> derive({
     required Uint8List psk,
@@ -378,8 +395,11 @@ class TransferCipher {
 
   Uint8List _nonceFor(int chunkIndex) {
     final n = Uint8List(_nonceBytes);
-    n.setRange(0, _transferIdBytes, _transferId);
-    final dv = ByteData.sublistView(n, _transferIdBytes);
+    // Only the first [_nonceIdPrefixBytes] of the (wider) transferId feed
+    // the nonce; the rest live only in the HKDF salt. This keeps the nonce
+    // at the spec-fixed 12 bytes while the salt's collision space is 96-bit.
+    n.setRange(0, _nonceIdPrefixBytes, _transferId);
+    final dv = ByteData.sublistView(n, _nonceIdPrefixBytes);
     dv.setUint32(0, chunkIndex, Endian.big);
     return n;
   }
