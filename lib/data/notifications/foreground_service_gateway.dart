@@ -82,8 +82,18 @@ class FlutterForegroundServiceGateway implements ForegroundServiceGateway {
         // No periodic event — the FG service exists to keep the main
         // isolate's process alive, not to do its own work.
         eventAction: ForegroundTaskEventAction.nothing(),
-        autoRunOnBoot: true,
-        autoRunOnMyPackageReplaced: true,
+        // Must stay false: a boot / package-replace auto-run restarts the
+        // FG service in its OWN task isolate, whose callback
+        // (sharerForegroundTaskCallback) is a no-op — the HTTP server,
+        // mDNS listener and pair-invite service all live in the MAIN
+        // isolate, which is NOT launched by an auto-run. So an auto-run
+        // would show a "Listening for files" notification + hold wake /
+        // wifi locks while actually receiving nothing (the service can
+        // keep the already-running main isolate alive, but cannot
+        // resurrect it). That is a misleading, battery-costing posture
+        // that violates principle #3 (near-zero background cost).
+        autoRunOnBoot: false,
+        autoRunOnMyPackageReplaced: false,
         allowWakeLock: true,
         allowWifiLock: true,
       ),
