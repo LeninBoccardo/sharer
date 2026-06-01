@@ -22,7 +22,8 @@ class ShowPairScreen extends ConsumerStatefulWidget {
   ConsumerState<ShowPairScreen> createState() => _ShowPairState();
 }
 
-class _ShowPairState extends ConsumerState<ShowPairScreen> {
+class _ShowPairState extends ConsumerState<ShowPairScreen>
+    with WidgetsBindingObserver {
   PairingOffer? _offer;
   String? _error;
   StreamSubscription<PairedDevice>? _completionSub;
@@ -32,7 +33,51 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
+  }
+
+  /// Audit #20 mitigation: the on-screen QR *is* the PSK (the trust
+  /// boundary). The moment this screen stops being the foreground UI —
+  /// app backgrounded, OS screenshot/recents thumbnail, screen locked —
+  /// kill the live offer so a captured frame is already dead. Returning
+  /// to the foreground re-mints a fresh offer via [_bootstrap].
+  ///
+  /// NOTE: this treats `inactive` as a kill too (aggressive default for a
+  /// secret on screen — defeats the recents thumbnail). On desktop that
+  /// also fires on an app-switcher peek; the resume re-mint keeps it
+  /// usable. If too churny, narrowing to paused/hidden/detached is a
+  /// one-line follow-up. The real cure is the X25519-QR redesign so the
+  /// PSK never reaches the screen at all.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      // Re-mint only if we previously tore an offer down (or never got
+      // one) and aren't in a terminal error state the user must act on.
+      if (_offer == null && _error == null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _bootstrap();
+        });
+      }
+      return;
+    }
+    // paused / inactive / hidden / detached: stop showing the secret.
+    final offer = _offer;
+    if (offer != null) {
+      _countdownTicker?.cancel();
+      _countdownTicker = null;
+      ref.read(pairingServiceProvider).cancelOffer(offer.offerId);
+      if (mounted) {
+        setState(() {
+          _offer = null;
+          _timeLeft = Duration.zero;
+        });
+      } else {
+        _offer = null;
+        _timeLeft = Duration.zero;
+      }
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -61,9 +106,15 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
     // responder can pin the cert when posting /pair completion.
     final tls = await ref.read(tlsKeyMaterialStoreProvider).get();
     final pairing = ref.read(pairingServiceProvider);
+    // Audit #20: the QR carries the raw PSK, so keep the live window
+    // short. 30s still comfortably covers a real scan-and-confirm while
+    // halving the shoulder-surf/photo exposure vs. the previous 60s
+    // default. (Backgrounding the screen kills it even sooner — see
+    // didChangeAppLifecycleState.)
     final offer = await pairing.createOffer(
       endpoints: endpoints,
       localCertFingerprintSha256: tls.certificateFingerprintSha256,
+      ttl: const Duration(seconds: 30),
     );
 
     _completionSub = pairing.completions.listen((paired) {
@@ -110,6 +161,7 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _countdownTicker?.cancel();
     final offer = _offer;
     if (offer != null) {
@@ -180,7 +232,26 @@ class _ShowPairState extends ConsumerState<ShowPairScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 28),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.visibility_off_outlined,
+                  size: 18, color: theme.colorScheme.error),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  'Keep this code private. Anyone who photographs it can '
+                  'pair with this device.',
+                  textAlign: TextAlign.start,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.error),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
           Text('On the other device, tap "Scan code" and point its '
               'camera at this screen.',
               textAlign: TextAlign.center,
