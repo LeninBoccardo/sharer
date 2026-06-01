@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sharer/data/discovery/mdns_backend.dart';
 import 'package:sharer/data/discovery/mdns_peer_discovery.dart';
 import 'package:sharer/domain/entities/device_identity.dart';
+import 'package:sharer/domain/entities/peer.dart';
 import 'package:sharer/domain/repositories/device_identity_repository.dart';
 
 import '../../fakes/fake_mdns_backend.dart';
@@ -38,18 +39,34 @@ Future<void> _settle() async {
   }
 }
 
-({MdnsPeerDiscovery discovery, FakeMdnsBackend backend, StreamController<bool> trust}) _setup({
+({
+  MdnsPeerDiscovery discovery,
+  FakeMdnsBackend backend,
+  StreamController<bool> trust,
+  void Function(Duration) advance,
+}) _setup({
   String selfId = 'self-id',
   String selfName = 'Self',
+  Duration peerTtl = const Duration(seconds: 60),
 }) {
   final backend = FakeMdnsBackend();
   final trust = StreamController<bool>.broadcast();
+  // Controllable clock so the TTL prune can be driven deterministically
+  // (no fakeAsync; the existing _settle() helper still works).
+  var clock = DateTime(2030, 1, 1, 12);
   final discovery = MdnsPeerDiscovery(
     backend: backend,
     identityRepo: _StaticIdentityRepo(id: selfId, name: selfName),
     isTrusted: trust.stream,
+    now: () => clock,
+    peerTtl: peerTtl,
   );
-  return (discovery: discovery, backend: backend, trust: trust);
+  return (
+    discovery: discovery,
+    backend: backend,
+    trust: trust,
+    advance: (Duration d) => clock = clock.add(d),
+  );
 }
 
 MdnsEvent _resolved({
@@ -391,6 +408,144 @@ void main() {
       expect(emissions.last, isFalse);
 
       await sub.cancel();
+    });
+  });
+
+  group('MdnsPeerDiscovery — TTL prune', () {
+    test('stale peer is pruned without a lost event', () async {
+      final s = _setup(peerTtl: const Duration(seconds: 60));
+      addTearDown(s.discovery.dispose);
+      addTearDown(s.trust.close);
+
+      final emissions = <List<Peer>>[];
+      final sub = s.discovery.watchPeers().listen(emissions.add);
+
+      await s.discovery.start();
+      s.trust.add(true);
+      await _settle();
+
+      s.backend.activeObservers.first.emit(_resolved(
+        name: 'sharer-a',
+        deviceId: 'peer-1',
+        displayName: 'A',
+      ));
+      await _settle();
+      expect((await s.discovery.watchPeers().first), hasLength(1));
+
+      // Advance past the TTL and prune — no `lost` event involved, which
+      // is the whole point: bonsoir often never emits one on Android.
+      s.advance(const Duration(seconds: 61));
+      s.discovery.prunePeers();
+      await _settle();
+
+      expect((await s.discovery.watchPeers().first), isEmpty);
+      expect(emissions.last, isEmpty,
+          reason: 'prune should emit the now-empty list');
+
+      await sub.cancel();
+    });
+
+    test('re-resolve re-stamps lastSeen and prevents prune', () async {
+      final s = _setup(peerTtl: const Duration(seconds: 60));
+      addTearDown(s.discovery.dispose);
+      addTearDown(s.trust.close);
+
+      await s.discovery.start();
+      s.trust.add(true);
+      await _settle();
+      final observer = s.backend.activeObservers.first;
+
+      observer.emit(_resolved(name: 'sharer-a', deviceId: 'peer-1'));
+      await _settle();
+
+      s.advance(const Duration(seconds: 40));
+      observer.emit(_resolved(name: 'sharer-a', deviceId: 'peer-1'));
+      await _settle();
+
+      // 80s since first resolve, but only 40s since the re-stamp.
+      s.advance(const Duration(seconds: 40));
+      s.discovery.prunePeers();
+      await _settle();
+
+      expect((await s.discovery.watchPeers().first).map((p) => p.id),
+          ['peer-1']);
+    });
+
+    test('a bare found event re-stamps a known peer to keep it alive',
+        () async {
+      final s = _setup(peerTtl: const Duration(seconds: 60));
+      addTearDown(s.discovery.dispose);
+      addTearDown(s.trust.close);
+
+      await s.discovery.start();
+      s.trust.add(true);
+      await _settle();
+      final observer = s.backend.activeObservers.first;
+
+      observer.emit(_resolved(name: 'sharer-a', deviceId: 'peer-1'));
+      await _settle();
+
+      s.advance(const Duration(seconds: 40));
+      // A re-`found` (no host/port) is still a liveness signal.
+      observer.emit(MdnsEvent(
+        kind: MdnsEventKind.found,
+        service: const MdnsService(
+          name: 'sharer-a',
+          attributes: {'deviceId': 'peer-1'},
+        ),
+      ));
+      await _settle();
+
+      s.advance(const Duration(seconds: 40)); // 40s since the found stamp
+      s.discovery.prunePeers();
+      await _settle();
+
+      expect((await s.discovery.watchPeers().first).map((p) => p.id),
+          ['peer-1']);
+    });
+
+    test('prune is a no-op when nothing is stale', () async {
+      final s = _setup(peerTtl: const Duration(seconds: 60));
+      addTearDown(s.discovery.dispose);
+      addTearDown(s.trust.close);
+
+      await s.discovery.start();
+      s.trust.add(true);
+      await _settle();
+
+      s.backend.activeObservers.first.emit(_resolved(
+        name: 'sharer-a',
+        deviceId: 'peer-1',
+      ));
+      await _settle();
+
+      s.advance(const Duration(seconds: 10));
+      s.discovery.prunePeers();
+      await _settle();
+
+      expect((await s.discovery.watchPeers().first), hasLength(1));
+    });
+
+    test('prune after untrust (peers already cleared) is harmless', () async {
+      final s = _setup(peerTtl: const Duration(seconds: 60));
+      addTearDown(s.discovery.dispose);
+      addTearDown(s.trust.close);
+
+      await s.discovery.start();
+      s.trust.add(true);
+      await _settle();
+      s.backend.activeObservers.first.emit(_resolved(
+        name: 'sharer-a',
+        deviceId: 'peer-1',
+      ));
+      await _settle();
+
+      s.trust.add(false);
+      await _settle(); // _disable clears peers + cancels the prune timer
+      s.advance(const Duration(seconds: 120));
+      s.discovery.prunePeers(); // no crash, nothing to remove
+
+      expect((await s.discovery.watchPeers().first), isEmpty);
     });
   });
 }

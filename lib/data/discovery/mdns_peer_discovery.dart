@@ -41,15 +41,40 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   /// server here; until then this is the advertised endpoint only.
   static const advertisedPort = 8080;
 
+  /// How long a peer may go without a fresh liveness signal (`found`,
+  /// `resolved`, or a bonsoir TXT/host `updated` — which the backend
+  /// already surfaces as `resolved`) before it is pruned from the list.
+  /// bonsoir/NSD re-resolves a healthy peer on a ~30 s cadence (the same
+  /// cadence the invite sweep and network resample already standardize
+  /// on), so a TTL of ~2x that tolerates one missed re-announce yet
+  /// still drops a genuinely-gone peer well inside a minute — even when
+  /// bonsoir's `lost` event never fires (a known Android reliability
+  /// gap; see reference_bonsoir_ip_flake).
+  ///
+  /// NOTE: the prune is only as good as the re-stamp cadence. If
+  /// real-device testing (Realme + Lenin-PC) shows bonsoir does NOT
+  /// re-emit resolved/updated for a still-present peer within this
+  /// window, raise this constant or gate the prune — a vanished-but-
+  /// alive peer is worse than a lingering dead one.
+  static const _defaultPeerTtl = Duration(seconds: 60);
+
+  /// How often the prune timer wakes. Cheap (a single map walk). A stale
+  /// peer disappears within at most [_peerTtl] + this interval.
+  static const _defaultPruneInterval = Duration(seconds: 30);
+
   final MdnsBackend _backend;
   final DeviceIdentityRepository _identityRepo;
   final Stream<bool> _isTrusted;
   final Random _random;
+  final DateTime Function() _now;
+  final Duration _peerTtl;
+  final Duration _pruneInterval;
 
   MdnsBroadcaster? _broadcaster;
   MdnsObserver? _observer;
   StreamSubscription<bool>? _trustSub;
   StreamSubscription<MdnsEvent>? _eventsSub;
+  Timer? _pruneTimer;
 
   final Map<String, Peer> _peers = {};
   final _peersController = StreamController<List<Peer>>.broadcast();
@@ -68,10 +93,16 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     required DeviceIdentityRepository identityRepo,
     required Stream<bool> isTrusted,
     Random? random,
+    DateTime Function()? now,
+    Duration peerTtl = _defaultPeerTtl,
+    Duration pruneInterval = _defaultPruneInterval,
   })  : _backend = backend,
         _identityRepo = identityRepo,
         _isTrusted = isTrusted,
-        _random = random ?? Random();
+        _random = random ?? Random(),
+        _now = now ?? DateTime.now,
+        _peerTtl = peerTtl,
+        _pruneInterval = pruneInterval;
 
   @override
   Stream<List<Peer>> watchPeers() async* {
@@ -106,6 +137,10 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
 
   Future<void> dispose() async {
     await stop();
+    // stop() -> reconcile -> _disable() already cancels the timer on the
+    // normal path; cancel again defensively so a dangling timer can
+    // never outlive the object even if the teardown path changes.
+    _stopPruneTimer();
     await _peersController.close();
     await _announcingController.close();
   }
@@ -164,6 +199,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     try {
       await _startObserver();
       await _startBroadcaster();
+      _startPruneTimer();
     } catch (e, st) {
       _log('Enable failed: $e');
       developer.log('Enable failed', error: e, stackTrace: st, name: _logName);
@@ -174,6 +210,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   }
 
   Future<void> _disable() async {
+    _stopPruneTimer();
     await _stopBroadcaster();
     await _stopObserver();
     if (_peers.isNotEmpty) {
@@ -203,6 +240,50 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     await o.stop();
   }
 
+  // -------- Prune (TTL expiry) --------
+
+  void _startPruneTimer() {
+    _pruneTimer ??= Timer.periodic(_pruneInterval, (_) => _prune());
+  }
+
+  void _stopPruneTimer() {
+    _pruneTimer?.cancel();
+    _pruneTimer = null;
+  }
+
+  /// Re-stamp a known peer's lastSeen on any liveness signal. No-op for
+  /// an unknown peer (a `found` may precede the first `resolved`, which
+  /// creates the entry with a fresh stamp anyway).
+  void _touchPeer(String id) {
+    final p = _peers[id];
+    if (p == null) return;
+    _peers[id] = p.copyWith(lastSeen: _now());
+  }
+
+  /// Drops peers we haven't seen a liveness signal from within
+  /// [_peerTtl]. bonsoir's `lost` event is unreliable on Android, so
+  /// without this a silently-departed peer would linger forever and the
+  /// user could tap a dead host:port on the share path. Only emits when
+  /// it actually removed something, to avoid pointless stream churn.
+  void _prune() {
+    final now = _now();
+    final stale = _peers.entries
+        .where((e) => now.difference(e.value.lastSeen) > _peerTtl)
+        .map((e) => e.key)
+        .toList(growable: false);
+    if (stale.isEmpty) return;
+    for (final id in stale) {
+      _peers.remove(id);
+    }
+    _log('Pruned ${stale.length} stale peer(s); peers=${_peers.length}');
+    _emit();
+  }
+
+  /// Test-only hook so the prune can be driven synchronously after
+  /// advancing an injected clock, without waiting on the real timer.
+  @visibleForTesting
+  void prunePeers() => _prune();
+
   Future<void> _onMdnsEvent(MdnsEvent event) async {
     final svc = event.service;
     final id = svc.attributes[_kDeviceIdAttr];
@@ -211,7 +292,12 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     switch (event.kind) {
       case MdnsEventKind.found:
         // Resolution is handled by the backend; we'll get a `resolved`
-        // event later with host/port populated.
+        // event later with host/port populated. But if this is a
+        // re-`found` of a peer we already know, treat it as a liveness
+        // signal and re-stamp lastSeen — extra insurance for the TTL
+        // prune (audit #2) so a peer bonsoir is still browsing isn't
+        // dropped just because it hasn't re-`resolved` within the TTL.
+        if (id != null) _touchPeer(id);
         break;
       case MdnsEventKind.resolved:
         await _onResolved(svc);
@@ -246,7 +332,7 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
       port: svc.port,
       // Pairing arrives in slice 4; until then everyone shows as unpaired.
       isPaired: false,
-      lastSeen: DateTime.now(),
+      lastSeen: _now(),
     );
     _log('Added peer name="$displayName" id=$id host=${svc.host}:${svc.port}; peers=${_peers.length}');
     _emit();
