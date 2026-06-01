@@ -126,6 +126,64 @@ void main() {
     expect(secure.snapshot['device.identity.seed.v2'], isNotNull);
   });
 
+  test('corrupt seed (un-decodable base64) regenerates identity AND fires '
+      'the reset callback (audit #22)', () async {
+    final prefs = await SharedPreferences.getInstance();
+    await secure.write('device.identity.seed.v2', '!!!not-base64!!!');
+    var resetInvoked = false;
+    final store = DeviceIdentityStore(
+      prefs,
+      secure: secure,
+      defaultName: () async => 'Phone',
+      onMigrationReset: () async => resetInvoked = true,
+    );
+
+    final identity = await store.get();
+    expect(identity.id, matches(RegExp(r'^[0-9a-f]{16}$')));
+    expect(resetInvoked, isTrue,
+        reason: 'stale paired devices must be wiped on corrupt-seed regen');
+    final seed = secure.snapshot['device.identity.seed.v2'];
+    expect(base64Decode(seed!), hasLength(32),
+        reason: 'a fresh valid 32-byte seed is persisted');
+  });
+
+  test('corrupt seed (valid base64, wrong length) regenerates identity AND '
+      'fires the reset callback (audit #22)', () async {
+    final prefs = await SharedPreferences.getInstance();
+    // 16 bytes decodes fine but LongTermSigner.fromSeed needs 32 -> throws.
+    await secure.write(
+        'device.identity.seed.v2', base64Encode(List<int>.filled(16, 7)));
+    var resetInvoked = false;
+    final store = DeviceIdentityStore(
+      prefs,
+      secure: secure,
+      defaultName: () async => 'Phone',
+      onMigrationReset: () async => resetInvoked = true,
+    );
+
+    final identity = await store.get();
+    expect(identity.id, matches(RegExp(r'^[0-9a-f]{16}$')));
+    expect(resetInvoked, isTrue);
+    expect(base64Decode(secure.snapshot['device.identity.seed.v2']!),
+        hasLength(32));
+  });
+
+  test('first launch with no prior seed does NOT fire the reset callback '
+      '(audit #22 negative guard)', () async {
+    final prefs = await SharedPreferences.getInstance();
+    var resetInvoked = false;
+    final store = DeviceIdentityStore(
+      prefs,
+      secure: secure,
+      defaultName: () async => 'Phone',
+      onMigrationReset: () async => resetInvoked = true,
+    );
+
+    await store.get();
+    expect(resetInvoked, isFalse,
+        reason: 'a genuine first launch must not wipe anything');
+  });
+
   test('sign() produces an Ed25519 signature verifiable with the public key',
       () async {
     final prefs = await SharedPreferences.getInstance();

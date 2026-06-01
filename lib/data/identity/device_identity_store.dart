@@ -94,6 +94,7 @@ class DeviceIdentityStore implements DeviceIdentityRepository {
 
   Future<LongTermSigner> _loadOrGenerate() async {
     final existingSeed = await _secure.read(_seedKey);
+    var seedWasCorrupt = false;
     if (existingSeed != null && existingSeed.isNotEmpty) {
       try {
         final seed = base64Decode(existingSeed);
@@ -101,6 +102,11 @@ class DeviceIdentityStore implements DeviceIdentityRepository {
         _log('loaded existing identity fingerprint=${signer.deviceIdFingerprint}');
         return signer;
       } catch (e) {
+        // A seed existed but couldn't be decoded/parsed. The fresh keypair
+        // below has a NEW deviceIdFingerprint, so every paired device
+        // pinned to the old deviceId/PSK is now unreachable garbage — it
+        // must be wiped just like the migration and TLS corruption paths.
+        seedWasCorrupt = true;
         _log('stored seed is corrupt — regenerating: $e');
       }
     }
@@ -113,16 +119,21 @@ class DeviceIdentityStore implements DeviceIdentityRepository {
     await _secure.write(_seedKey, base64Encode(seedBytes));
     await _prefs.setString(_publicKeyKey, base64Encode(fresh.publicKey));
 
-    if (hadLegacyIdentity) {
-      await _prefs.remove(_legacyIdKey);
-      _log('migrated from UUID identity to Ed25519; '
-          'wiping paired-devices store');
+    if (hadLegacyIdentity || seedWasCorrupt) {
+      if (hadLegacyIdentity) {
+        await _prefs.remove(_legacyIdKey);
+        _log('migrated from UUID identity to Ed25519; '
+            'wiping paired-devices store');
+      } else {
+        _log('regenerated identity after corrupt seed; '
+            'wiping paired-devices store (stale deviceId/PSK)');
+      }
       final cb = _onMigrationReset;
       if (cb != null) {
         try {
           await cb();
         } catch (e, st) {
-          developer.log('migration reset callback failed',
+          developer.log('identity reset callback failed',
               error: e, stackTrace: st, name: _logName);
         }
       }
