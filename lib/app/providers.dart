@@ -173,6 +173,17 @@ final pairedDevicesStreamProvider = StreamProvider<List<PairedDevice>>((ref) {
 /// Derived view used by the peer list to badge already-paired peers.
 /// Empty when paired devices haven't loaded yet — the tile just shows
 /// the unpaired state until then.
+///
+/// Audit #43: this returns a *fresh* `Set` instance on every emit of
+/// [pairedDevicesStreamProvider], and `Set` has identity-based equality.
+/// Riverpod gates listener notifications on `previous != next`, so a
+/// raw `ref.watch(pairedDeviceIdsProvider)` rebuilds the consumer on
+/// every paired-devices emit even when the membership is unchanged —
+/// once per peer tile, on the hot share path. Consumers MUST therefore
+/// `.select` the scalar they actually need (e.g.
+/// `pairedDeviceIdsProvider.select((ids) => ids.contains(peerId))`):
+/// the selected `bool` has value-equality, so identical-content emits no
+/// longer trigger a widget rebuild. The selector itself stays O(1).
 final pairedDeviceIdsProvider = Provider<Set<String>>((ref) {
   final list = ref.watch(pairedDevicesStreamProvider).value ?? const [];
   return {for (final d in list) d.deviceId};

@@ -189,8 +189,11 @@ class _PeerTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final pairedIds = ref.watch(pairedDeviceIdsProvider);
-    final isPaired = pairedIds.contains(peer.id);
+    // Audit #43: select the per-peer bool so this tile only rebuilds when
+    // *its own* paired status flips — not on every paired-devices emit
+    // (pairedDeviceIdsProvider hands back a fresh, identity-equal Set).
+    final isPaired = ref
+        .watch(pairedDeviceIdsProvider.select((ids) => ids.contains(peer.id)));
     return Card(
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

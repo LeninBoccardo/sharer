@@ -79,8 +79,11 @@ class _BatteryOptimizationBannerState
   @override
   Widget build(BuildContext context) {
     if (!_checked || !_shouldShow) return const SizedBox.shrink();
-    final paired = ref.watch(pairedDeviceIdsProvider);
-    if (paired.isEmpty) return const SizedBox.shrink();
+    // Audit #43: select the bool so the banner only rebuilds when the
+    // "has any paired device" state actually flips, not on every emit.
+    final hasPaired =
+        ref.watch(pairedDeviceIdsProvider.select((ids) => ids.isNotEmpty));
+    if (!hasPaired) return const SizedBox.shrink();
 
     final theme = Theme.of(context);
     return Container(
