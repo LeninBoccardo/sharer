@@ -71,6 +71,18 @@ HttpClient buildPinningHttpClient({
   return client;
 }
 
+// Case-insensitive equality on hex SHA-256 fingerprints.
+//
+// Audit #49: this is deliberately NOT a constant-time compare — the
+// early `length` return and per-char short-circuit below leak how many
+// leading chars matched. That is fine here: both operands are PUBLIC
+// values, never secrets. `a` is the pin we exchanged in cleartext at
+// pair time, and `b` is the fingerprint of a cert the peer presents on
+// every TLS handshake (anyone on the wire can compute it). There is no
+// secret to recover from the timing, so no timing-oracle exists and a
+// constant-time compare would buy nothing. (Contrast with HMAC/MAC
+// verification, which DOES use a constant-time compare because the MAC
+// is derived from the PSK.)
 bool _equalsIgnoreCase(String a, String b) {
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
