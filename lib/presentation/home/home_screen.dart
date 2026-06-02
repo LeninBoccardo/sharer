@@ -247,22 +247,77 @@ class _EmptyStateState extends ConsumerState<_EmptyState> {
   }
 }
 
-class _PeerList extends StatelessWidget {
+class _PeerList extends ConsumerWidget {
   const _PeerList({required this.peers});
 
   final List<Peer> peers;
 
+  /// Stable, value-equal signature of how [peers] partitions by paired
+  /// membership. Watched via `.select` so the list re-partitions only when
+  /// the partition would actually change — NOT on every identity-equal
+  /// pairedDeviceIdsProvider emit (preserves audit #43).
+  String _partitionKey(Set<String> pairedIds) {
+    final paired = [
+      for (final p in peers)
+        if (pairedIds.contains(p.id)) p.id
+    ]..sort();
+    return paired.join(',');
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // The `.select` gates the rebuild (fires only when the signature
+    // changes); the trailing ref.read just fetches the current Set to do
+    // the O(n) split. Reading adds no subscription, so it cannot cause
+    // extra rebuilds — the select is the gate. Do NOT collapse this to
+    // ref.watch(pairedDeviceIdsProvider): that reintroduces the whole-list
+    // rebuild audit #43 removed (the provider hands back a fresh,
+    // identity-equal Set on every paired-devices emit).
+    ref.watch(pairedDeviceIdsProvider.select(_partitionKey));
+    final pairedIds = ref.read(pairedDeviceIdsProvider);
+    final paired = [for (final p in peers) if (pairedIds.contains(p.id)) p];
+    final nearby = [for (final p in peers) if (!pairedIds.contains(p.id)) p];
+
     // Render inline so the parent SingleChildScrollView owns the scroll;
     // a nested ListView here would conflict.
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (var i = 0; i < peers.length; i++) ...[
-          if (i > 0) const SizedBox(height: 8),
-          _PeerTile(peer: peers[i]),
+        if (paired.isNotEmpty) ...[
+          const _SectionHeader(label: 'Paired'),
+          for (var i = 0; i < paired.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            _PeerTile(peer: paired[i]),
+          ],
+        ],
+        if (paired.isNotEmpty && nearby.isNotEmpty) const SizedBox(height: 16),
+        if (nearby.isNotEmpty) ...[
+          const _SectionHeader(label: 'Nearby (not paired)'),
+          for (var i = 0; i < nearby.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            _PeerTile(peer: nearby[i]),
+          ],
         ],
       ],
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      child: Text(
+        label,
+        style: theme.textTheme.labelLarge
+            ?.copyWith(color: theme.colorScheme.outline),
+      ),
     );
   }
 }
