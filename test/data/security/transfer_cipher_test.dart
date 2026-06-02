@@ -226,4 +226,22 @@ void main() {
     expect(await _drain(cipherA.decrypt(Stream.value(wireA))), plaintext);
     expect(await _drain(cipherB.decrypt(Stream.value(wireB))), plaintext);
   });
+
+  group('chunk index cap (audit #29)', () {
+    // The 32-bit chunk-counter hard-fail (StateError before setUint32 wraps)
+    // only triggers at 2^32 chunks = 256 TB in ONE transfer, which is
+    // infeasible to drive in a unit test and lives in the private
+    // _encryptFrame (chunkIndex is not externally injectable). Instead pin
+    // the per-chunk wire framing the cap assumes — proving the guard left the
+    // wire format byte-identical (non-wire-breaking): 8-byte frame header +
+    // 16-byte GCM tag = 24 bytes overhead per chunk.
+    test('per-chunk wire overhead is unchanged (8B header + 16B tag)', () {
+      expect(encryptedLengthFor(0), 24);
+      // A 2-chunk payload carries exactly two chunks' worth of overhead.
+      expect(
+        encryptedLengthFor(kPlaintextChunkSize + 1) - (kPlaintextChunkSize + 1),
+        48,
+      );
+    });
+  });
 }

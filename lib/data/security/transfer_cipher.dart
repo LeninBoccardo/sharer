@@ -78,6 +78,20 @@ const int _maxCipherFrameBytes = kPlaintextChunkSize + _gcmTagBytes;
 /// length (16 base64 chars instead of 12); both peers update together.
 const int _transferIdBytes = 12;
 
+/// Largest chunk index the wire/nonce can represent. The chunk counter is
+/// serialised as a 4-byte big-endian field in both the frame header and the
+/// GCM nonce (transferId[0:8] ‖ chunkIndex(4B) — see [_nonceFor]). Audit #12
+/// fixed the nonce at 8-byte id prefix + 4-byte counter, leaving no room to
+/// widen the counter without breaking the wire format, so once the counter
+/// would exceed this value [TransferCipher._encryptFrame] hard-fails instead
+/// of letting `setUint32` silently wrap.
+///
+/// Reaching it requires 2^32 chunks in ONE transfer = 256 TB at the 64 KB
+/// [kPlaintextChunkSize] — absurd in practice, but a wrap would reuse a
+/// (key, nonce) pair under AES-256-GCM, which is a catastrophic break
+/// (audit #29). Hard-failing keeps the wire format unchanged.
+const int _maxChunkIndex = 0xFFFFFFFF;
+
 /// Length on the wire for a plaintext payload of [plaintextSize] bytes
 /// when run through [TransferCipher.encrypt]. Used by the sender to set
 /// `Content-Length` correctly — without it the HTTP layer would either
@@ -274,6 +288,17 @@ class TransferCipher {
   }
 
   Future<_Frame> _encryptFrame(int chunkIndex, Uint8List plaintext) async {
+    // Hard-fail before the 4-byte chunkIndex field would silently wrap
+    // (setUint32 masks to 32 bits). A wrap past _maxChunkIndex would reuse a
+    // (key, nonce) pair under AES-256-GCM — catastrophic. This caps a single
+    // transfer at 2^32 chunks (256 TB at kPlaintextChunkSize); see audit #29.
+    // The decrypt side reads frameIndex via getUint32, so it is already
+    // bounded and needs no equivalent guard.
+    if (chunkIndex > _maxChunkIndex) {
+      throw StateError(
+          'transfer cipher: chunk index $chunkIndex exceeds the 32-bit wire '
+          'limit ($_maxChunkIndex); transfer too large to encrypt safely');
+    }
     final nonce = _nonceFor(chunkIndex);
     final secretBox = await _gcm.encrypt(
       plaintext,
