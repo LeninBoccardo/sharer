@@ -44,6 +44,15 @@ class TransferServiceImpl implements TransferService {
   /// reversed. Bounded so completed/failed transfers don't grow without
   /// bound across a long-running session.
   final Map<String, Transfer> _byId = {};
+
+  /// Cached most-recent-first ordering of [_byId] keys. The display order
+  /// (descending by startedAt) only changes when the key-set changes — a
+  /// new transfer is inserted or terminal entries are evicted — never on a
+  /// value-only progress/status update (startedAt is immutable through
+  /// copyWith). New transfers always carry startedAt = DateTime.now(), the
+  /// latest, so prepending here preserves the descending order without a
+  /// per-emit sort (audit #51).
+  final List<String> _orderedIds = [];
   final _controller = StreamController<List<Transfer>>.broadcast();
   StreamSubscription<IncomingEvent>? _incomingSub;
 
@@ -346,6 +355,12 @@ class TransferServiceImpl implements TransferService {
   }
 
   void _put(Transfer t) {
+    // A brand-new id changes the key-set, so it (and only it) updates the
+    // cached ordering. New transfers carry the latest startedAt, so
+    // most-recent-first means prepend.
+    if (!_byId.containsKey(t.id)) {
+      _orderedIds.insert(0, t.id);
+    }
     _byId[t.id] = t;
     _evictOldTerminals();
     _controller.add(_snapshot());
@@ -361,15 +376,23 @@ class TransferServiceImpl implements TransferService {
       return ta.compareTo(tb);
     });
     final toDrop = terminals.length - _maxKeptTerminal;
+    final dropped = <String>{};
     for (final e in terminals.take(toDrop)) {
       _byId.remove(e.key);
+      dropped.add(e.key);
     }
+    _orderedIds.removeWhere(dropped.contains);
   }
 
-  /// Most-recent first.
+  /// Most-recent first. Built from the cached [_orderedIds] order so there
+  /// is no per-emit sort — the order is maintained incrementally as the
+  /// key-set changes in [_put] / [_evictOldTerminals] (audit #51).
   List<Transfer> _snapshot() {
-    final list = _byId.values.toList();
-    list.sort((a, b) => b.startedAt.compareTo(a.startedAt));
+    final list = <Transfer>[];
+    for (final id in _orderedIds) {
+      final t = _byId[id];
+      if (t != null) list.add(t);
+    }
     return List.unmodifiable(list);
   }
 
