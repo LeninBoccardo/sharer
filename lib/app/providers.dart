@@ -361,7 +361,13 @@ final transfersStreamProvider = StreamProvider<List<Transfer>>((ref) {
 /// Singleton notification platform wrapper. Override in tests with a
 /// fake plugin so widget tests don't hit MethodChannels.
 final notificationServiceProvider = Provider<NotificationService>((ref) {
-  return NotificationService();
+  final s = NotificationService();
+  // Audit #41: the service owns a broadcast StreamController for
+  // foreground responses. Close it when the container is disposed so a
+  // torn-down ProviderContainer (tests / future container swaps) doesn't
+  // leak the controller. Mirrors every other disposable provider here.
+  ref.onDispose(() => s.dispose());
+  return s;
 });
 
 /// Coordinator that wires the transfer + invite + trust streams into
