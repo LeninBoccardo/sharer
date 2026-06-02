@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -19,6 +21,14 @@ class ScanPairScreen extends ConsumerStatefulWidget {
 }
 
 class _ScanPairState extends ConsumerState<ScanPairScreen> {
+  // Audit #44: own the scanner controller explicitly so we can stop the
+  // decode loop the instant we lock onto a valid offer. Without this, the
+  // camera keeps decoding (and re-firing onDetect) all through the pairing
+  // round-trip, burning CPU/battery. Passing an explicit controller also
+  // means MobileScanner no longer disposes it for us — we must dispose() it
+  // ourselves in State.dispose().
+  final MobileScannerController _scannerController = MobileScannerController();
+
   bool _processing = false;
   String? _status;
 
@@ -33,6 +43,10 @@ class _ScanPairState extends ConsumerState<ScanPairScreen> {
       setState(() => _status = 'This code has expired. Generate a new one.');
       return;
     }
+    // First successful scan: stop decoding so the camera idles during the
+    // pairing round-trip. stop() is idempotent, so the repeated onDetect
+    // callbacks that fire before this awaits are harmless.
+    unawaited(_scannerController.stop());
     setState(() {
       _processing = true;
       _status = 'Pairing with ${offer.initiatorName}…';
@@ -103,6 +117,15 @@ class _ScanPairState extends ConsumerState<ScanPairScreen> {
   }
 
   @override
+  void dispose() {
+    // We passed an explicit controller to MobileScanner, so the widget will
+    // NOT dispose it for us (v7.2.0 only auto-disposes the controller it
+    // creates itself). Release the camera here to avoid a leak.
+    unawaited(_scannerController.dispose());
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
@@ -115,6 +138,7 @@ class _ScanPairState extends ConsumerState<ScanPairScreen> {
     return Stack(
       children: [
         MobileScanner(
+          controller: _scannerController,
           fit: BoxFit.cover,
           errorBuilder: (context, error) =>
               _CameraUnavailable(error: error, theme: theme),
