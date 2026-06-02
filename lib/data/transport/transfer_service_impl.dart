@@ -79,13 +79,23 @@ class TransferServiceImpl implements TransferService {
     if (!peer.isReachable) {
       throw StateError('Peer ${peer.id} is not reachable (no host/port).');
     }
-    final identity = await _identityRepo.get();
-    // Sign + pin against the peer's pinned cert fingerprint when we
-    // have a PairedDevice entry for them. Unpaired sends — only
-    // possible in slice ≤ 4.3 mode where the trust-network gate was
-    // the fallback — go out unsigned and unpinned. Slice 4.4 + 5.1
-    // production servers reject both.
-    final paired = await _pairedRepo.get(peer.id);
+    // Audit #50: the identity load and the paired-device lookup are
+    // independent storage reads, so run them concurrently to shave a
+    // round-trip off the send hot path. Both futures are awaited
+    // together via the records `.wait` extension, so neither is left
+    // orphaned; a failure in either still propagates out of send()
+    // before any Transfer is created.
+    //
+    // The `paired` lookup decides signing + cert-pinning: when we have
+    // a PairedDevice entry for the peer we sign + pin against its
+    // pinned cert fingerprint. Unpaired sends — only possible in slice
+    // ≤ 4.3 mode where the trust-network gate was the fallback — go out
+    // unsigned and unpinned. Slice 4.4 + 5.1 production servers reject
+    // both.
+    final (identity, paired) = await (
+      _identityRepo.get(),
+      _pairedRepo.get(peer.id),
+    ).wait;
     final transfer = Transfer(
       id: _uuid.v4(),
       peerId: peer.id,
