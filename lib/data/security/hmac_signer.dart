@@ -22,13 +22,23 @@ class SignedRequestHeaders {
 
 /// Builds the X-Sharer-Sig family of headers for v1's HMAC layer.
 ///
-/// **Note on body hashing.** The literal v1 spec calls for sha256(body) in
-/// the canonical string. Files stream end-to-end and may be multi-GB, so
-/// we cannot buffer the body to hash it (architecture's "Streaming and
-/// memory" rule). We instead authenticate the request manifest — sender,
-/// filename, size, path — which is sufficient to gate "who can upload to
-/// this server". Bytes-on-wire integrity is layered on by TLS + cert
-/// pinning in slice 5.
+/// **Note on body hashing (intentional omission — audit #48).** The literal
+/// v1 spec calls for sha256(body) in the canonical string. We deliberately
+/// leave it out:
+///   1. Files stream end-to-end and may be multi-GB, so we cannot buffer the
+///      body to hash it (architecture's "Streaming and memory" rule).
+///   2. Body integrity does not need the HMAC. Since slice 5.3 the file body
+///      is shipped as AES-256-GCM frames (see [TransferCipher] in
+///      `transfer_cipher.dart`); each chunk carries a 16-byte GCM auth tag,
+///      so any tampering with the bytes-on-wire fails decryption and aborts
+///      the transfer. The per-transfer GCM key/nonce are derived from the
+///      PSK + transferId, and the transferId itself IS an authenticated
+///      field of this HMAC (the trailing field of [canonicalString]) — so
+///      the HMAC binds the request to exactly the GCM stream that will follow.
+/// The HMAC therefore authenticates the request manifest — sender, filename,
+/// size, path, transferId — which gates "who can upload to this server" and
+/// pins the GCM stream; per-chunk GCM tags (plus TLS + cert pinning) cover
+/// the body bytes themselves. sha256(body) would be redundant.
 class HmacSigner {
   final Random _random;
   final DateTime Function() _now;
