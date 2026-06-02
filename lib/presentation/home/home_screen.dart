@@ -19,6 +19,7 @@ import '../pairing/pair_invite_modal.dart';
 import '../pairing/show_pair_screen.dart';
 import '../share/pending_shares_controller.dart';
 import '../share/share_pending_banner.dart';
+import '../transfers/transfer_screen.dart';
 import '../transfers/transfers_section.dart';
 import 'battery_optimization_banner.dart';
 import 'quiet_mode_banner.dart';
@@ -275,14 +276,25 @@ class _PeerTile extends ConsumerWidget {
     // here instead of opening the file picker. Lets the user share
     // *into* Sharer with a single tap on the destination peer.
     final pending = ref.read(pendingSharesProvider).value;
+    final Set<String> startedIds;
     if (pending != null && pending.isNotEmpty) {
-      await _sendPending(context, ref, pending.files);
-      return;
+      startedIds = await _sendPending(context, ref, pending.files);
+    } else {
+      startedIds = await _pickAndSend(context, ref);
     }
-    await _pickAndSend(context, ref);
+    // The upload(s) are already streaming (send() is fire-and-forget), so
+    // pushing the transfer screen here is decorative — it adds no latency
+    // to the share path. Scoped to just the ids we started.
+    if (startedIds.isEmpty || !context.mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) =>
+          TransferScreen(transferIds: startedIds, peerName: peer.name),
+    ));
   }
 
-  Future<void> _sendPending(
+  /// Returns the ids of the transfers it started (for the transfer screen
+  /// to scope to); empty when nothing was queued.
+  Future<Set<String>> _sendPending(
     BuildContext context,
     WidgetRef ref,
     List<IncomingSharedFile> files,
@@ -291,6 +303,7 @@ class _PeerTile extends ConsumerWidget {
     final pendingController = ref.read(pendingSharesControllerProvider);
     var queued = 0;
     var skipped = 0;
+    final started = <String>{};
     final deleteImmediately = <String>[];
     for (final shared in files) {
       try {
@@ -313,6 +326,7 @@ class _PeerTile extends ConsumerWidget {
         // so defer the delete until this transfer reaches a terminal
         // status (completed/failed) on watchAll().
         final transfer = await transferService.send(peer: peer, file: payload);
+        started.add(transfer.id);
         unawaited(_deleteWhenDrained(
           transferService,
           pendingController,
@@ -332,7 +346,7 @@ class _PeerTile extends ConsumerWidget {
     // delete. Eagerly reap only files never handed to a transfer.
     pendingController.clearState();
     await pendingController.deleteFiles(deleteImmediately);
-    if (!context.mounted) return;
+    if (!context.mounted) return started;
     if (queued == 0) {
       _toast(context, 'Could not send shared files.');
     } else if (queued == 1 && skipped == 0) {
@@ -344,6 +358,7 @@ class _PeerTile extends ConsumerWidget {
         '${skipped > 0 ? ' ($skipped skipped)' : ''}…',
       );
     }
+    return started;
   }
 
   /// Audit #5: wait for [transferId] to reach a terminal status on the
@@ -490,7 +505,9 @@ class _PeerTile extends ConsumerWidget {
     }
   }
 
-  Future<void> _pickAndSend(BuildContext context, WidgetRef ref) async {
+  /// Returns the ids of the transfers it started (for the transfer screen
+  /// to scope to); empty when nothing was queued.
+  Future<Set<String>> _pickAndSend(BuildContext context, WidgetRef ref) async {
     final FilePickerResult? result;
     try {
       result = await FilePicker.pickFiles(
@@ -498,15 +515,16 @@ class _PeerTile extends ConsumerWidget {
         allowMultiple: true,
       );
     } catch (e) {
-      if (!context.mounted) return;
+      if (!context.mounted) return const <String>{};
       _toast(context, 'File picker error: $e');
-      return;
+      return const <String>{};
     }
-    if (result == null || result.files.isEmpty) return;
+    if (result == null || result.files.isEmpty) return const <String>{};
 
     final transferService = ref.read(transferServiceProvider);
     var queued = 0;
     var skipped = 0;
+    final started = <String>{};
     for (final picked in result.files) {
       final stream = picked.readStream;
       if (stream == null) {
@@ -520,13 +538,14 @@ class _PeerTile extends ConsumerWidget {
         mimeType: lookupMimeType(picked.name),
       );
       try {
-        await transferService.send(peer: peer, file: payload);
+        final transfer = await transferService.send(peer: peer, file: payload);
+        started.add(transfer.id);
         queued++;
       } catch (_) {
         skipped++;
       }
     }
-    if (!context.mounted) return;
+    if (!context.mounted) return started;
     if (queued == 0) {
       _toast(context, 'No files could be sent.');
     } else if (queued == 1 && skipped == 0) {
@@ -539,6 +558,7 @@ class _PeerTile extends ConsumerWidget {
         '${skipped > 0 ? ' ($skipped skipped)' : ''}…',
       );
     }
+    return started;
   }
 
   void _toast(BuildContext context, String message) {
