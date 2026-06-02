@@ -29,7 +29,9 @@ Device B: tap "Scan device" → camera reads QR → stores triple in secure stor
 
 PSK is 256 bits, generated at first run, stored in platform secure storage (Android Keystore / Windows DPAPI via `flutter_secure_storage`).
 
-A short-numeric-code fallback ("type 6 digits") is provided for when the camera path is unavailable (e.g. desktop ↔ desktop with no webcam). Codes are single-use, expire in 60 s, and are bound to a one-shot challenge so they can't be brute-forced offline.
+A short-numeric-code fallback ("type 6 digits") was envisioned for when the camera path is unavailable (e.g. desktop ↔ desktop with no webcam). The QR offer does carry a single-use 6-digit code (expires in 60 s, bound to a one-shot challenge so it can't be brute-forced offline).
+
+**Implementation status (v1):** a *typed-code-only* pairing path — reconstructing a full offer from 6 digits alone — is **not built and is deferred to v2.** The QR carries the PSK, public key, cert fingerprint and endpoints; 6 digits cannot rebuild that without a new code→key exchange (a server-side offer registry keyed by code), which v1 deliberately does not add. The camera-less need is already met another way: the **LAN pair-invite + fingerprint flow (§6)** pairs two devices with no camera at all — tap the peer → "Send pair invite" → both screens confirm the same 6-digit fingerprint. A future typed-code QR replacement would build on §6 by letting the user *type* that fingerprint instead of comparing it on-screen; deferred to v2.
 
 **Unpaired peers are not shown in the peer picker.** They appear in a separate "nearby (not paired)" section that requires explicit tap-through to start a pair flow.
 
