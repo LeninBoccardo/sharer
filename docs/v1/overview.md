@@ -1,6 +1,6 @@
 # v1 — Overview
 
-Status: **in design** (no implementation yet — `lib/main.dart` still holds the `flutter create` boilerplate).
+Status: **implemented** through slice 5.5, plus the v4.8 audit remediation (Tiers A/B/C). [lib/main.dart](../../lib/main.dart) is the real composition root, **not** the `flutter create` boilerplate. Shipped subsystems: mDNS discovery (bonsoir), streamed HTTPS transport (shelf server + client, never buffers a whole file), QR + LAN pairing with Ed25519 device identity + per-pair PSK + self-signed cert pinning, AES-256-GCM per-chunk encryption, HMAC-signed requests, notifications + Android foreground service + Windows tray + cold-start tap routing, Android `ACTION_SEND` share-sheet, and forget/rediscover. Remaining v1 work: the documented-but-unbuilt UX gaps (phase 4 — dedicated transfer screen, cancel/retry, peer-list sections, scan button, announce-burst, re-pair prompt) and the post-v1 items listed below.
 
 ## What v1 ships
 
