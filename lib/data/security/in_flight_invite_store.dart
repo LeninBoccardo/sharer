@@ -134,6 +134,13 @@ class InFlightInviteStore {
     return all[inviteId];
   }
 
+  /// All persisted in-flight entries, keyed by inviteId. Read-only
+  /// snapshot for boot-time interrupted-handshake detection (the detector
+  /// classifies interrupted vs expired, then purges). Cheap — a single
+  /// secure-storage read. A corrupt blob yields an empty map (same as the
+  /// other readers).
+  Future<Map<String, InFlightInviteEntry>> readAll() => _readAll();
+
   Future<void> remove(String inviteId) async {
     final all = await _readAll();
     if (all.remove(inviteId) == null) return;

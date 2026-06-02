@@ -91,6 +91,16 @@ Future<void> main() async {
     // so the cold-start share is captured before the home screen renders.
     container.read(pendingSharesControllerProvider);
 
+    // Phase 4 doc-gap: capture any responder-side pair handshake left in
+    // the persisted mailbox by a crash/kill mid-confirm, BEFORE any session
+    // activity (and before the PairInviteService expiry sweep, started
+    // lazily by the HTTP server / notification coordinator, can touch the
+    // mailbox). The detector classifies (interrupted vs expired) + consumes
+    // the marker; the home InterruptedPairingBanner surfaces the one-shot
+    // "Previous pairing was interrupted — re-pair?" prompt. Fire-and-forget
+    // — the FutureProvider memoizes the result for the session.
+    container.read(interruptedPairingProvider);
+
     // Audit #46: do NOT block the first frame on notification init.
     // NotificationService.init() is a platform-plugin round-trip
     // (Android channel registration / Windows WinRT toast registration)

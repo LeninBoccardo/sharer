@@ -22,6 +22,7 @@ import '../data/notifications/notification_service.dart';
 import '../data/notifications/windows_tray_controller.dart';
 import '../data/security/forget_service.dart';
 import '../data/security/in_flight_invite_store.dart';
+import '../data/security/interrupted_pairing_detector.dart';
 import '../data/share/incoming_share_service.dart';
 import '../data/security/hmac_verifier.dart';
 import '../data/security/pair_invite_client.dart';
@@ -228,6 +229,26 @@ final pairingClientProvider = Provider<PairingClient>((ref) {
 /// pair-invite while the main isolate is dead.
 final inFlightInviteStoreProvider = Provider<InFlightInviteStore>((ref) {
   return InFlightInviteStore(ref.watch(secureKeyValueStoreProvider));
+});
+
+/// Phase 4 doc-gap: detects a responder-side pair handshake left in the
+/// persisted mailbox by a crash/kill mid-confirm (architecture.md transport
+/// rule #4 / ux.md pairing rule #4).
+final interruptedPairingDetectorProvider =
+    Provider<InterruptedPairingDetector>((ref) {
+  return InterruptedPairingDetector(ref.watch(inFlightInviteStoreProvider));
+});
+
+/// One-shot: resolves to the leftover interrupted handshake (if any) and
+/// PURGES the marker as a side effect, so the prompt shows exactly once.
+/// FutureProvider memoizes the result for the container lifetime — no
+/// re-detection within a session, so a new invite saved later this run
+/// never re-raises the banner. Do NOT ref.invalidate it (it would re-read
+/// an already-empty mailbox and return null — safe, but pointless).
+final interruptedPairingProvider = FutureProvider<InterruptedPairing?>((ref) {
+  return ref
+      .watch(interruptedPairingDetectorProvider)
+      .detectAndConsume(DateTime.now());
 });
 
 /// Slice 4.6: coordinates the LAN pair-invite handshake. One instance

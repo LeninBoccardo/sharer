@@ -107,6 +107,25 @@ void main() {
     expect(await store.get('stale'), isNull);
   });
 
+  test('readAll returns every saved entry keyed by inviteId', () async {
+    await store.save(_entry(inviteId: 'a'));
+    await store.save(_entry(inviteId: 'b'));
+    final all = await store.readAll();
+    expect(all.keys.toSet(), {'a', 'b'});
+    expect(all['a']?.peerHost, '192.168.68.56');
+    expect(all['b']?.inviteId, 'b');
+  });
+
+  test('readAll on an empty store returns an empty map', () async {
+    expect(await store.readAll(), isEmpty);
+  });
+
+  test('readAll on a corrupt blob returns an empty map (does not throw)',
+      () async {
+    await secure.write('in_flight_invites_v1', '{not-valid-json');
+    expect(await store.readAll(), isEmpty);
+  });
+
   test('a corrupt blob is treated as empty (does not throw)', () async {
     await secure.write('in_flight_invites_v1', '{not-valid-json');
     expect(await store.get('whatever'), isNull);

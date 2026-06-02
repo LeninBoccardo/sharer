@@ -23,6 +23,7 @@ import '../share/share_pending_banner.dart';
 import '../transfers/transfer_screen.dart';
 import '../transfers/transfers_section.dart';
 import 'battery_optimization_banner.dart';
+import 'interrupted_pairing_banner.dart';
 import 'quiet_mode_banner.dart';
 import 'web_native_app_banner.dart';
 
@@ -152,6 +153,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               const WebNativeAppBanner(),
               const QuietModeBanner(),
               const BatteryOptimizationBanner(),
+              const InterruptedPairingBanner(),
               const SharePendingBanner(),
               Text('Nearby devices', style: theme.textTheme.titleLarge),
               const SizedBox(height: 12),
