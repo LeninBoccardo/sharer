@@ -68,7 +68,7 @@ Future<_SignedFixture> _setupSigned({
   final server = HttpFileServer(
     downloads: FakeDownloadsLocator(dir),
     isTrusted: trust.stream,
-    verifier: HmacVerifier(paired),
+    verifier: HmacVerifier(paired, localDeviceId: Future.value('server-local-id')),
     port: 0,
     maxTransferBytes:
         maxTransferBytes ?? HttpFileServer.defaultMaxTransferBytes,
@@ -134,6 +134,7 @@ Future<HttpClientResponse> _postSignedUpload({
     method: 'POST',
     path: TransportProtocol.uploadPath,
     senderDeviceId: senderId,
+    recipientDeviceId: 'server-local-id',
     filename: fileName,
     filesize: declared,
     transferId: transferIdB64,
@@ -751,7 +752,8 @@ void main() {
       secure = FakeSecureKeyValueStore();
       paired = PairedDevicesStore(secure);
       signer = HmacSigner();
-      verifier = HmacVerifier(paired);
+      verifier = HmacVerifier(paired,
+          localDeviceId: Future.value('server-local-id'));
     });
 
     tearDown(() => paired.dispose());

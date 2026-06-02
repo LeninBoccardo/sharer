@@ -86,14 +86,24 @@ class HmacVerifier {
   final Duration _nonceTtl;
   final DateTime Function() _now;
 
+  /// Audit #30: this device's own deviceId, awaited once and reused. The
+  /// verifier reconstructs the HMAC canonical with this id as the
+  /// `recipientDeviceId`, so a request a peer signed for a DIFFERENT
+  /// recipient (same PSK, different local identity) fails the signature
+  /// check here. Held as a Future because the composition root resolves
+  /// the identity asynchronously; `verify` is already async.
+  final Future<String> _localDeviceId;
+
   final Map<String, DateTime> _seenNonces = {};
 
   HmacVerifier(
     this._paired, {
+    required Future<String> localDeviceId,
     Duration? clockSkew,
     Duration? nonceTtl,
     DateTime Function()? now,
-  })  : _clockSkew = clockSkew ?? const Duration(seconds: 30),
+  })  : _localDeviceId = localDeviceId,
+        _clockSkew = clockSkew ?? const Duration(seconds: 30),
         _nonceTtl = nonceTtl ?? const Duration(seconds: 60),
         _now = now ?? DateTime.now;
 
@@ -153,12 +163,15 @@ class HmacVerifier {
       return _reject('nonce replay', HmacRejectionReason.transient);
     }
 
+    // Audit #30: reconstruct with THIS device's own id as the recipient.
+    final localDeviceId = await _localDeviceId;
     final canonical = canonicalString(
       method: method,
       path: path,
       timestampMs: ts,
       nonce: nonce!,
       senderDeviceId: senderDeviceId,
+      recipientDeviceId: localDeviceId,
       filename: filename,
       filesize: filesize,
       transferId: transferId,

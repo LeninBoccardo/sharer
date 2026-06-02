@@ -65,7 +65,11 @@ abstract final class TransportProtocol {
   // ---- Slice 4.2: HMAC authentication. ----
   // All three are required as a set; if any is present, the others must
   // be too. Signed values cover the request manifest (method, path,
-  // sender, filename, size). See HmacSigner.canonicalString.
+  // sender, recipient, filename, size). Audit #30: the recipient's own
+  // deviceId is bound into the canonical (the verifier reconstructs it
+  // from its local identity, not from a header), so a signature is not
+  // replayable against a different recipient sharing the same PSK. See
+  // HmacSigner.canonicalString.
 
   /// Sender's clock at request time, in unix milliseconds (UTC).
   static const String headerTimestamp = 'x-sharer-timestamp';

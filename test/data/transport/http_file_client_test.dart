@@ -80,6 +80,7 @@ void main() {
         bytes: Stream.fromIterable([bytes]),
       ),
       sender: stubIdentity(id: 'sender-id', name: 'Sender'),
+      recipientDeviceId: 'recipient-id',
     );
 
     expect(result.bytesSent, bytes.length);
@@ -107,6 +108,7 @@ void main() {
         bytes: Stream.fromIterable(chunks),
       ),
       sender: stubIdentity(id: 'sender-id', name: 'Sender'),
+      recipientDeviceId: 'recipient-id',
       onProgress: reported.add,
     );
 
@@ -138,7 +140,7 @@ void main() {
     server = HttpFileServer(
       downloads: FakeDownloadsLocator(tmpDir),
       isTrusted: trust.stream,
-      verifier: HmacVerifier(paired),
+      verifier: HmacVerifier(paired, localDeviceId: Future.value('recipient-id')),
       port: 0,
     );
     client = HttpFileClient(httpClient: HttpClient());
@@ -156,6 +158,7 @@ void main() {
         bytes: Stream.fromIterable([bytes]),
       ),
       sender: stubIdentity(id: 'sender-id', name: 'Sender'),
+      recipientDeviceId: 'recipient-id',
       recipientPsk: psk,
     );
 
@@ -189,7 +192,7 @@ void main() {
     server = HttpFileServer(
       downloads: FakeDownloadsLocator(tmpDir),
       isTrusted: trust.stream,
-      verifier: HmacVerifier(paired),
+      verifier: HmacVerifier(paired, localDeviceId: Future.value('recipient-id')),
       port: 0,
     );
     client = HttpFileClient(httpClient: HttpClient());
@@ -208,6 +211,7 @@ void main() {
           bytes: Stream.fromIterable([bytes]),
         ),
         sender: stubIdentity(id: 'sender-id', name: 'Sender'),
+        recipientDeviceId: 'recipient-id',
         recipientPsk: wrongPsk,
       ),
       throwsA(isA<UploadStatusException>()
@@ -245,6 +249,7 @@ void main() {
           bytes: const Stream.empty(),
         ),
         sender: stubIdentity(id: 'sender-id', name: 'Sender'),
+        recipientDeviceId: 'recipient-id',
       ),
       throwsA(isA<UploadStatusException>()
           .having((e) => e.statusCode, 'statusCode', 400)),
@@ -264,6 +269,7 @@ void main() {
           bytes: Stream.fromIterable([actual]),
         ),
         sender: stubIdentity(id: 'sender-id', name: 'Sender'),
+        recipientDeviceId: 'recipient-id',
       ),
       throwsA(isA<PayloadSizeMismatchException>()
           .having((e) => e.declaredBytes, 'declaredBytes', actual.length + 100)

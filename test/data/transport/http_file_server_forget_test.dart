@@ -118,6 +118,7 @@ Future<HttpClientResponse> _postSignedUpload({
     method: 'POST',
     path: TransportProtocol.uploadPath,
     senderDeviceId: senderId,
+    recipientDeviceId: 'local-server',
     filename: fileName,
     filesize: body.length,
     transferId: transferIdB64,
@@ -173,7 +174,8 @@ void main() {
     );
     await paired.add(peer);
     clock = DateTime.utc(2026, 6, 1, 12);
-    verifier = HmacVerifier(paired, now: () => clock);
+    verifier = HmacVerifier(paired,
+        localDeviceId: Future.value('local-server'), now: () => clock);
     identity = await StaticIdentityRepo.create(seed: 9);
     forget = ForgetService(
       pairedRepo: paired,

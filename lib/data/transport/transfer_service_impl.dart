@@ -146,6 +146,10 @@ class TransferServiceImpl implements TransferService {
         port: port,
         file: file,
         sender: sender,
+        // Audit #30: bind the recipient's own deviceId into the HMAC.
+        // peer.id is the PairedDevice.deviceId we send to; the receiver
+        // reconstructs the canonical with its own local id.
+        recipientDeviceId: peer.id,
         recipientPsk: recipientPsk,
         recipientCertFingerprint: recipientCertFingerprint,
         onProgress: (bytes) {

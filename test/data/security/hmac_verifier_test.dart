@@ -42,7 +42,8 @@ void main() {
     secure = FakeSecureKeyValueStore();
     paired = PairedDevicesStore(secure);
     now = DateTime.utc(2026, 5, 4, 12);
-    verifier = HmacVerifier(paired, now: () => now);
+    verifier = HmacVerifier(paired,
+        localDeviceId: Future.value('local-recipient'), now: () => now);
     signer = HmacSigner(random: Random(0), now: () => now);
   });
 
@@ -109,6 +110,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -132,6 +134,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -152,12 +155,37 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
     final result = await verifyFromHeaders(peer: peer, headers: headers);
     expect(result, isA<HmacAuthenticated>());
     expect((result as HmacAuthenticated).device.deviceId, peer.deviceId);
+  });
+
+  test('rejects a signature minted for a DIFFERENT recipient (audit #30)',
+      () async {
+    // Same PSK, same sender — but the signer bound a different recipient id
+    // than this verifier's own localDeviceId ('local-recipient'), so the
+    // reconstructed canonical differs and the signature must not verify.
+    final peer = makePeer();
+    await paired.add(peer);
+    final headers = signer.sign(
+      psk: peer.psk,
+      method: 'POST',
+      path: '/upload',
+      senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'other-recipient',
+      filename: 'foo.txt',
+      filesize: 100,
+    );
+    final result = await verifyFromHeaders(peer: peer, headers: headers);
+    expect(result, isA<HmacRejected>());
+    expect((result as HmacRejected).detail, contains('signature'));
+    // A recipient mismatch is a recoverable signing failure, NOT an unpair
+    // signal — must stay transient (bare 401, never reactive-forget).
+    expect(result.reason, HmacRejectionReason.transient);
   });
 
   test('rejects when signed with a different PSK than the peer registered',
@@ -170,6 +198,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -186,6 +215,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -206,6 +236,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -225,6 +256,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -239,13 +271,16 @@ void main() {
     final peer = makePeer();
     await paired.add(peer);
     verifier = HmacVerifier(paired,
-        now: () => now, nonceTtl: const Duration(seconds: 60));
+        localDeviceId: Future.value('local-recipient'),
+        now: () => now,
+        nonceTtl: const Duration(seconds: 60));
 
     final headers = signer.sign(
       psk: peer.psk,
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -269,6 +304,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: peer.deviceId,
+      recipientDeviceId: 'local-recipient',
       filename: 'foo.txt',
       filesize: 100,
     );

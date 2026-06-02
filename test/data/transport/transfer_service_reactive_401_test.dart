@@ -62,7 +62,8 @@ void main() {
     server = HttpFileServer(
       downloads: FakeDownloadsLocator(tmpDir),
       isTrusted: trust.stream,
-      verifier: HmacVerifier(receiverPaired),
+      verifier: HmacVerifier(receiverPaired,
+          localDeviceId: Future.value('receiver-id')),
       port: 0,
     );
     await server.start();

@@ -17,6 +17,7 @@ void main() {
       timestampMs: 1700000000000,
       nonce: 'AAAA',
       senderDeviceId: 'sender-id',
+      recipientDeviceId: 'recipient',
       filename: 'foo.txt',
       filesize: 42,
     );
@@ -26,6 +27,7 @@ void main() {
       timestampMs: 1700000000000,
       nonce: 'AAAA',
       senderDeviceId: 'sender-id',
+      recipientDeviceId: 'recipient',
       filename: 'foo.txt',
       filesize: 42,
     );
@@ -39,6 +41,7 @@ void main() {
       timestampMs: 1700000000000,
       nonce: 'AAAA',
       senderDeviceId: 'sender-id',
+      recipientDeviceId: 'recipient',
       filename: 'foo.txt',
       filesize: 42,
     );
@@ -49,6 +52,7 @@ void main() {
         timestampMs: 1700000000000,
         nonce: 'AAAA',
         senderDeviceId: 'sender-id',
+        recipientDeviceId: 'recipient',
         filename: 'foo.txt',
         filesize: 42,
       ),
@@ -61,6 +65,7 @@ void main() {
         timestampMs: 1700000000000,
         nonce: 'AAAA',
         senderDeviceId: 'sender-id',
+        recipientDeviceId: 'recipient',
         filename: 'bar.txt',
         filesize: 42,
       ),
@@ -73,11 +78,38 @@ void main() {
         timestampMs: 1700000000000,
         nonce: 'AAAA',
         senderDeviceId: 'sender-id',
+        recipientDeviceId: 'recipient',
         filename: 'foo.txt',
         filesize: 43,
       ),
       isNot(equals(base)),
     );
+  });
+
+  test('canonical string changes when only recipientDeviceId changes '
+      '(audit #30)', () {
+    final a = canonicalString(
+      method: 'POST',
+      path: '/upload',
+      timestampMs: 1700000000000,
+      nonce: 'AAAA',
+      senderDeviceId: 'sender-id',
+      recipientDeviceId: 'recipient-a',
+      filename: 'foo.txt',
+      filesize: 42,
+    );
+    final b = canonicalString(
+      method: 'POST',
+      path: '/upload',
+      timestampMs: 1700000000000,
+      nonce: 'AAAA',
+      senderDeviceId: 'sender-id',
+      recipientDeviceId: 'recipient-b',
+      filename: 'foo.txt',
+      filesize: 42,
+    );
+    expect(a, isNot(equals(b)),
+        reason: 'binding the recipient must change the signed canonical');
   });
 
   test('canonical string normalizes method case', () {
@@ -87,6 +119,7 @@ void main() {
       timestampMs: 1,
       nonce: 'n',
       senderDeviceId: 'd',
+      recipientDeviceId: 'recipient',
       filename: 'f',
       filesize: 0,
     );
@@ -96,6 +129,7 @@ void main() {
       timestampMs: 1,
       nonce: 'n',
       senderDeviceId: 'd',
+      recipientDeviceId: 'recipient',
       filename: 'f',
       filesize: 0,
     );
@@ -112,6 +146,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: 'sender',
+      recipientDeviceId: 'recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -126,6 +161,7 @@ void main() {
       timestampMs: int.parse(h.timestamp),
       nonce: h.nonce,
       senderDeviceId: 'sender',
+      recipientDeviceId: 'recipient',
       filename: 'foo.txt',
       filesize: 100,
     );
@@ -140,6 +176,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: 'sender',
+      recipientDeviceId: 'recipient',
       filename: 'foo.txt',
       filesize: 0,
     );
@@ -148,6 +185,7 @@ void main() {
       method: 'POST',
       path: '/upload',
       senderDeviceId: 'sender',
+      recipientDeviceId: 'recipient',
       filename: 'foo.txt',
       filesize: 0,
     );

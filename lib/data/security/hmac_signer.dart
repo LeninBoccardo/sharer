@@ -52,6 +52,7 @@ class HmacSigner {
     required String method,
     required String path,
     required String senderDeviceId,
+    required String recipientDeviceId,
     required String filename,
     required int filesize,
     String? transferId,
@@ -64,6 +65,7 @@ class HmacSigner {
       timestampMs: timestampMs,
       nonce: nonce,
       senderDeviceId: senderDeviceId,
+      recipientDeviceId: recipientDeviceId,
       filename: filename,
       filesize: filesize,
       transferId: transferId,
@@ -88,10 +90,19 @@ class HmacSigner {
 /// Canonical input to HMAC-SHA256. Newline-delimited fields. Filename is
 /// hashed so the field is fixed length and can't sneak in a delimiter.
 ///
-/// [transferId] (slice 5.3) appends an 8th field when non-null. Older
-/// pre-5.3 signed requests omit it entirely so the canonical string
-/// stays exactly 7 lines and existing pairs that haven't upgraded both
-/// sides can still verify each other. The receiver mirrors whichever
+/// Audit #30: [recipientDeviceId] — the local deviceId of the device the
+/// request is destined for — is authenticated as a fixed field. The
+/// sender supplies the recipient's id (the PairedDevice.deviceId it sends
+/// to); the verifier reconstructs the canonical with its OWN local
+/// deviceId. A signature minted for one recipient therefore can't be
+/// replayed against a different device that shares the same per-pair PSK.
+/// Defense-in-depth on top of the PSK lookup. WIRE-BREAKING: both ends
+/// must include it; an old-format request fails the signature check and
+/// is rejected (the safe default — see HmacVerifier.verify).
+///
+/// [transferId] (slice 5.3) appends a trailing field when non-null. It
+/// stays the LAST field so the recipient-id addition doesn't disturb the
+/// optional-transferId tail. The receiver mirrors whichever transferId
 /// shape the request has on the wire — see `HttpFileServer._handleUpload`.
 String canonicalString({
   required String method,
@@ -99,6 +110,7 @@ String canonicalString({
   required int timestampMs,
   required String nonce,
   required String senderDeviceId,
+  required String recipientDeviceId,
   required String filename,
   required int filesize,
   String? transferId,
@@ -110,6 +122,7 @@ String canonicalString({
     timestampMs.toString(),
     nonce,
     senderDeviceId,
+    recipientDeviceId,
     filenameHash,
     filesize.toString(),
   ];

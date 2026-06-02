@@ -181,7 +181,15 @@ final pairedDeviceIdsProvider = Provider<Set<String>>((ref) {
 /// Server-side HMAC validator. The same instance is used for the whole
 /// app lifetime so its replay-buffer state survives across requests.
 final hmacVerifierProvider = Provider<HmacVerifier>((ref) {
-  return HmacVerifier(ref.watch(pairedDevicesRepoProvider));
+  return HmacVerifier(
+    ref.watch(pairedDevicesRepoProvider),
+    // Audit #30: the verifier reconstructs the HMAC canonical with this
+    // device's own id as the recipient field. Resolved once (the repo
+    // caches the identity after first read) and shared for the app
+    // lifetime, matching the single-instance verifier.
+    localDeviceId:
+        ref.watch(deviceIdentityRepoProvider).get().then((i) => i.id),
+  );
 });
 
 /// Coordinates the pairing handshake on both sides — owns the active
