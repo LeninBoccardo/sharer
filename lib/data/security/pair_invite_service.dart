@@ -263,6 +263,13 @@ class PairInviteService {
   /// to this to show / dismiss the fingerprint-confirm modal.
   Stream<PairInvite> get invites => _invites.stream;
 
+  /// Test-only: number of live decline-cooldown entries. Audit #32 added a
+  /// sweep that drops entries past their cooldown window; this lets a test
+  /// prove the map actually shrinks (the leak is memory-only, with no other
+  /// externally observable effect).
+  @visibleForTesting
+  int get declinedCooldownEntryCount => _declinedAt.length;
+
   // ====================================================================
   //  Initiator side
   // ====================================================================
@@ -847,6 +854,15 @@ class PairInviteService {
     // Retain for the invite TTL + skew measured from consume time.
     final nonceCutoff = n.subtract(_inviteTtl + _seenNonceSkew);
     _seenInviteNonces.removeWhere((_, when) => when.isBefore(nonceCutoff));
+
+    // Audit #32: drop decline-cooldown entries whose window has fully
+    // elapsed. Without this the map grows one entry per distinct peer
+    // ever declined and never shrinks. The predicate is the exact
+    // negation of acceptInvite's cooldown gate
+    // (`_now().isBefore(when + _declineCooldown)`), so any entry that
+    // would still rate-limit is kept and behaviour is unchanged.
+    _declinedAt
+        .removeWhere((_, when) => !n.isBefore(when.add(_declineCooldown)));
   }
 
   PairInvite _toInvite(_Pending p, PairInviteStatus status) => PairInvite(

@@ -418,6 +418,37 @@ void main() {
     expect(acc2, isA<PairInviteAccepted>());
   });
 
+  test('decline cooldown entry is purged by the periodic sweep once the '
+      'window elapses (audit #32)', () async {
+    // Rebuild b sharing the outer `now` (so a's invite isn't already
+    // expired) but with a short cooldown + fast sweep we can drive.
+    await b.dispose();
+    b = PairInviteService(
+      pairedB,
+      idB,
+      random: Random(1),
+      now: () => now,
+      declineCooldown: const Duration(seconds: 1),
+      expirySweepInterval: const Duration(milliseconds: 50),
+    );
+
+    // Arm a decline cooldown for idA.
+    final r = await _runHandshake(a: a, b: b, idA: idA, idB: idB);
+    final decline = await b.markLocalDeclined(r.inviteId);
+    expect(decline, isNotNull);
+    expect(b.declinedCooldownEntryCount, 1);
+
+    // Advance past the cooldown window and let the periodic sweep tick a
+    // few times with NO other call into b.
+    now = now.add(const Duration(seconds: 5));
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+
+    // Pre-fix the sweep never touched _declinedAt, so the entry leaked and
+    // the count stayed 1. The audit #32 purge drops it.
+    expect(b.declinedCooldownEntryCount, 0,
+        reason: 'stale decline-cooldown entry must be purged by the sweep');
+  });
+
   test('responder publicKey/deviceId mismatch in completeInvite is rejected',
       () async {
     final payload = await a.createInvite(
