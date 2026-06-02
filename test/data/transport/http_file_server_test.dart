@@ -324,6 +324,54 @@ void main() {
       await eventsSub.cancel();
     });
 
+    test('does not emit a duplicate final IncomingProgress (audit #27)',
+        () async {
+      final f = await _setupSigned();
+      addTearDown(() async {
+        await f.server.dispose();
+        await f.trust.close();
+        await f.paired.dispose();
+        f.dir.deleteSync(recursive: true);
+      });
+
+      final events = <IncomingEvent>[];
+      final eventsSub = f.server.events.listen(events.add);
+
+      await f.server.start();
+      f.trust.add(true);
+      await _settle();
+
+      // Exact multiple of the 256 KiB progress threshold so the last in-loop
+      // emit reports the final byte count; the post-loop emit would otherwise
+      // duplicate it.
+      final body = utf8.encode('A' * (256 * 1024));
+      final response = await _postSignedUpload(
+        port: f.server.boundPort!,
+        signer: f.signer,
+        signWithPsk: f.peer.psk,
+        encryptWithPsk: f.peer.psk,
+        senderId: f.peer.deviceId,
+        senderName: f.peer.displayName,
+        fileName: 'exact.bin',
+        body: body,
+      );
+
+      expect(response.statusCode, HttpStatus.ok);
+      await response.drain<void>();
+      await _settle();
+
+      final progress = events.whereType<IncomingProgress>().toList();
+      // The final byte count must appear at most once across all progress
+      // events (it can never legitimately be 2).
+      final finals =
+          progress.where((p) => p.bytesReceived == body.length).length;
+      expect(finals, lessThanOrEqualTo(1),
+          reason: 'final progress value must not be emitted twice (audit #27)');
+      expect(events.last, isA<IncomingCompleted>());
+
+      await eventsSub.cancel();
+    });
+
     test('rejects signed requests with no filename header (400)', () async {
       final f = await _setupSigned();
       addTearDown(() async {

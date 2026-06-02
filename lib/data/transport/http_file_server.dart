@@ -485,7 +485,16 @@ class HttpFileServer {
         displayName: destFile.uri.pathSegments.last,
         mimeType: request.headers['content-type'],
       );
-      _events.add(IncomingProgress(id: id, bytesReceived: bytesReceived));
+      // Audit #27: only emit a final progress tick when it carries new
+      // information. The in-loop emit (threshold guard) sets
+      // lastEmittedBytes == bytesReceived whenever it last fired exactly at
+      // the final count (e.g. a transfer ending on a threshold boundary);
+      // re-emitting the same value here is a redundant downstream rebuild.
+      // A sub-threshold transfer never fired in-loop (lastEmittedBytes == 0)
+      // so this still delivers the single 100% tick.
+      if (bytesReceived != lastEmittedBytes) {
+        _events.add(IncomingProgress(id: id, bytesReceived: bytesReceived));
+      }
       _events.add(IncomingCompleted(id: id, savedPath: publishedPath));
       _log('Receive done id=$id bytes=$bytesReceived path=$publishedPath');
       return Response.ok(
