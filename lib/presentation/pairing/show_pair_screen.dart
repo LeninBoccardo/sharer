@@ -215,19 +215,29 @@ class _ShowPairState extends ConsumerState<ShowPairScreen>
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Center(
-            child: Card(
-              elevation: 0,
-              color: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-                side: BorderSide(color: theme.colorScheme.outlineVariant),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: QrImageView(
-                  data: encoded,
-                  size: 280,
-                  backgroundColor: Colors.white,
+            // Audit #45 (a11y): a QrImageView is an opaque CustomPaint, so
+            // TalkBack/VoiceOver announce nothing. Describe it as an image
+            // and point the user at the spoken numeric fallback below.
+            child: Semantics(
+              image: true,
+              label: 'Pairing QR code. Scan it from the other device, or '
+                  'use the numeric code below if you cannot scan.',
+              child: ExcludeSemantics(
+                child: Card(
+                  elevation: 0,
+                  color: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side: BorderSide(color: theme.colorScheme.outlineVariant),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: QrImageView(
+                      data: encoded,
+                      size: 280,
+                      backgroundColor: Colors.white,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -269,11 +279,18 @@ class _ShowPairState extends ConsumerState<ShowPairScreen>
                     style: theme.textTheme.labelMedium
                         ?.copyWith(color: theme.colorScheme.outline)),
                 const SizedBox(height: 4),
-                Text(
-                  offer.numericCode,
-                  style: theme.textTheme.headlineMedium?.copyWith(
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                    letterSpacing: 4,
+                // Audit #45 (a11y): letterSpacing makes the raw digits read
+                // as a single run-together number; supply a digit-by-digit
+                // spoken label so the code is dictatable to a blind user.
+                Semantics(
+                  label:
+                      'Numeric code: ${offer.numericCode.split('').join(' ')}',
+                  child: Text(
+                    offer.numericCode,
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                      letterSpacing: 4,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),

@@ -118,27 +118,37 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primaryContainer,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            // FittedBox + softWrap:false keeps "12 34 56" on one line on
-            // narrow phones (real-device caught wrap on a 360dp Realme)
-            // while still letting wider screens render it large.
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                pretty,
-                softWrap: false,
-                maxLines: 1,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontFeatures: [FontFeature.tabularFigures()],
-                  fontSize: 32,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 4,
+          // Audit #45 (a11y): the fingerprint is the verification number
+          // the user must compare across both screens, but "12 34 56" with
+          // monospace + letterSpacing reads ambiguously. Spell it digit by
+          // digit so a screen-reader user can verify it.
+          Semantics(
+            label: 'Verification number: '
+                '${_current.fingerprint.split('').join(' ')}',
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              // FittedBox + softWrap:false keeps "12 34 56" on one line on
+              // narrow phones (real-device caught wrap on a 360dp Realme)
+              // while still letting wider screens render it large.
+              child: ExcludeSemantics(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    pretty,
+                    softWrap: false,
+                    maxLines: 1,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontFeatures: [FontFeature.tabularFigures()],
+                      fontSize: 32,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 4,
+                    ),
+                  ),
                 ),
               ),
             ),

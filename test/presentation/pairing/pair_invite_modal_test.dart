@@ -87,4 +87,18 @@ void main() {
     expect(find.text('open'), findsOneWidget,
         reason: 'the underlying route was never popped');
   });
+
+  testWidgets('audit #45: the fingerprint exposes a digit-by-digit '
+      'screen-reader label', (tester) async {
+    final controller = StreamController<PairInvite>.broadcast();
+    addTearDown(controller.close);
+    final handle = tester.ensureSemantics();
+    await _pumpAndOpenModal(tester, controller.stream);
+
+    // _invite's fingerprint is '123456' — the modal must announce it spelled
+    // out so a blind user can compare the verification number across devices.
+    expect(find.bySemanticsLabel('Verification number: 1 2 3 4 5 6'),
+        findsOneWidget);
+    handle.dispose();
+  });
 }
