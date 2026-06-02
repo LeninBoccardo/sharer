@@ -42,6 +42,19 @@ Transfer _received(String id) => Transfer(
       startedAt: DateTime.utc(2026, 5, 4),
     );
 
+/// Pump in small steps until [cond] holds (or we run out of tries), so the
+/// SnackBar assertions don't depend on exact entrance/dismiss animation
+/// durations (which made this test occasionally flake under load).
+Future<void> _pumpUntil(
+  WidgetTester tester,
+  bool Function() cond, {
+  int tries = 20,
+}) async {
+  for (var i = 0; i < tries && !cond(); i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
 void main() {
   testWidgets(
       'announced-set is pruned when a transfer ages out, so a reused id '
@@ -65,7 +78,7 @@ void main() {
 
     // First appearance of r1: announced exactly once.
     service.emit([_received('r1')]);
-    await tester.pump();
+    await _pumpUntil(tester, () => find.byType(SnackBar).evaluate().isNotEmpty);
     expect(find.byType(SnackBar), findsOneWidget);
     expect(find.textContaining('Received'), findsOneWidget);
 
@@ -75,16 +88,14 @@ void main() {
     // Dismiss the lingering snackbar so the next assertion is unambiguous.
     ScaffoldMessenger.of(tester.element(find.byType(TransfersSection)))
         .clearSnackBars();
-    await tester.pump(); // begin the dismiss animation
-    await tester.pump(const Duration(milliseconds: 500)); // let it complete
+    await _pumpUntil(tester, () => find.byType(SnackBar).evaluate().isEmpty);
     expect(find.byType(SnackBar), findsNothing);
 
     // r1 re-enters as completed. Because it was pruned, it announces
     // again. Under the unpruned (buggy) code r1 would still be in the
     // set and this snackbar would never show.
     service.emit([_received('r1')]);
-    await tester.pump(); // stream delivers -> showSnackBar enqueued
-    await tester.pump(const Duration(milliseconds: 750)); // snackbar animates in
+    await _pumpUntil(tester, () => find.byType(SnackBar).evaluate().isNotEmpty);
     expect(find.byType(SnackBar), findsOneWidget);
     expect(find.textContaining('Received'), findsOneWidget);
   });
