@@ -97,6 +97,10 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   bool _desiredEnabled = false;
   bool _reconcileInFlight = false;
   bool _reconcileQueued = false;
+  // Set by refreshAnnouncement(); consumed inside _applyDesiredState to
+  // restart the broadcaster in place (re-reading the new device name)
+  // without touching the observer/peer list (audit #47).
+  bool _refreshBroadcastRequested = false;
   // Completed by the in-flight reconcile owner in its `finally`. A second
   // caller awaits this single future instead of polling the event loop.
   // Non-null exactly while [_reconcileInFlight] is true (both are set in
@@ -149,6 +153,23 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
     await _trustSub?.cancel();
     _trustSub = null;
     _desiredEnabled = false;
+    await _runReconcileToCompletion();
+  }
+
+  @override
+  Future<void> refreshAnnouncement() async {
+    // Only meaningful while we're actually broadcasting. If we're idle
+    // (quiet mode / not started yet) the next _enable() will pick up the
+    // current name anyway, so there is nothing to refresh.
+    if (!_started || !_desiredEnabled || _broadcaster == null) {
+      _log('refreshAnnouncement skipped (announcing=$_announcing)');
+      return;
+    }
+    _log('refreshAnnouncement requested — restarting broadcaster in place');
+    _refreshBroadcastRequested = true;
+    // Route through the reconcile serializer so this cannot interleave
+    // with a concurrent trust transition. The owner's convergence loop
+    // consumes the flag in _applyDesiredState.
     await _runReconcileToCompletion();
   }
 
@@ -218,6 +239,20 @@ class MdnsPeerDiscovery implements PeerDiscoveryRepository {
   Future<void> _applyDesiredState() async {
     final shouldBeEnabled = _desiredEnabled && _started;
     final isEnabled = _broadcaster != null || _observer != null;
+    // A rename can ask us to re-advertise without changing enabled state.
+    // Restart only the broadcaster (re-reads the new name) and keep the
+    // observer / peer list / announcing subscribers intact (audit #47).
+    if (shouldBeEnabled && isEnabled && _refreshBroadcastRequested) {
+      _refreshBroadcastRequested = false;
+      if (_broadcaster != null) {
+        await _stopBroadcaster();
+        await _startBroadcaster();
+      }
+      return;
+    }
+    // The refresh flag only applies while enabled; drop it otherwise so a
+    // stale request can't trigger a spurious restart on the next reconcile.
+    _refreshBroadcastRequested = false;
     if (shouldBeEnabled == isEnabled) return;
     if (shouldBeEnabled) {
       await _enable();

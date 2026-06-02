@@ -121,9 +121,12 @@ class _DeviceCard extends ConsumerWidget {
     );
     if (result == null || result.trim().isEmpty) return;
     await ref.read(deviceIdentityRepoProvider).rename(result);
-    // Force re-read of cached identity + restart broadcast under the new name.
+    // Force re-read of cached identity, then re-advertise under the new
+    // name IN PLACE. Invalidating peerDiscoveryProvider would dispose the
+    // whole discovery object (observer, peer list, announcing stream) just
+    // to change the broadcast TXT name (audit #47).
     ref.invalidate(deviceIdentityProvider);
-    ref.invalidate(peerDiscoveryProvider);
+    await ref.read(peerDiscoveryProvider).refreshAnnouncement();
   }
 }
 

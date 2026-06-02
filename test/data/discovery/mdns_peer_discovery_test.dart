@@ -31,6 +31,29 @@ class _StaticIdentityRepo implements DeviceIdentityRepository {
       throw UnimplementedError('mdns tests do not exercise Ed25519 signing');
 }
 
+/// Like [_StaticIdentityRepo] but with a mutable name so a test can rename
+/// and assert refreshAnnouncement re-reads it (audit #47).
+class _MutableIdentityRepo implements DeviceIdentityRepository {
+  _MutableIdentityRepo({required this.id, required this.name});
+
+  final String id;
+  String name;
+
+  @override
+  Future<DeviceIdentity> get() async => DeviceIdentity(
+        id: id,
+        name: name,
+        publicKey: Uint8List(32),
+      );
+
+  @override
+  Future<void> rename(String newName) async => name = newName;
+
+  @override
+  Future<List<int>> sign(List<int> message) async =>
+      throw UnimplementedError('mdns tests do not exercise Ed25519 signing');
+}
+
 /// Backend whose broadcaster/observer `stop()` never completes — models
 /// bonsoir wedging on Android teardown (audit #16). observe()/broadcast()
 /// themselves resolve so discovery can come up before the wedge.
@@ -411,6 +434,67 @@ void main() {
       final secondName = s.backend.activeBroadcasters.single.spec.name;
 
       expect(firstName, isNot(equals(secondName)));
+    });
+
+    test('refreshAnnouncement re-advertises under the new name in place '
+        'without tearing down discovery (audit #47)', () async {
+      final backend = FakeMdnsBackend();
+      final trust = StreamController<bool>.broadcast();
+      final repo = _MutableIdentityRepo(id: 'my-device', name: 'Old Name');
+      final discovery = MdnsPeerDiscovery(
+        backend: backend,
+        identityRepo: repo,
+        isTrusted: trust.stream,
+      );
+      addTearDown(discovery.dispose);
+      addTearDown(trust.close);
+
+      await discovery.start();
+      trust.add(true);
+      await _settle();
+
+      final observerBefore = backend.activeObservers.single;
+      final broadcasterBefore = backend.activeBroadcasters.single;
+      expect(broadcasterBefore.spec.attributes['name'], 'Old Name');
+
+      // A peer is discovered; the rename must not drop it.
+      observerBefore.emit(_resolved(
+        name: 'sharer-x',
+        deviceId: 'peer-1',
+        displayName: 'P',
+      ));
+      await _settle();
+      expect(await discovery.watchPeers().first, hasLength(1));
+
+      await repo.rename('New Name');
+      await discovery.refreshAnnouncement();
+      await _settle();
+
+      // Discovery was NOT torn down: same observer instance, peer kept.
+      expect(backend.activeObservers.single, same(observerBefore));
+      expect(await discovery.watchPeers().first, hasLength(1));
+      // New name advertised; the old broadcaster was stopped in place.
+      expect(backend.activeBroadcasters.single.spec.attributes['name'],
+          'New Name');
+      expect(broadcasterBefore.isStopped, isTrue);
+      // Still announcing after the in-place restart.
+      expect(await discovery.watchAnnouncing().first, isTrue);
+    });
+
+    test('refreshAnnouncement is a no-op in quiet mode (audit #47)', () async {
+      final s = _setup();
+      addTearDown(s.discovery.dispose);
+      addTearDown(s.trust.close);
+
+      await s.discovery.start();
+      s.trust.add(false); // untrusted network → not announcing
+      await _settle();
+      expect(s.backend.activeBroadcasters, isEmpty);
+
+      await s.discovery.refreshAnnouncement();
+      await _settle();
+      // No broadcaster minted, no throw.
+      expect(s.backend.activeBroadcasters, isEmpty);
     });
   });
 
