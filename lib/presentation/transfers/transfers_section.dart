@@ -39,6 +39,10 @@ class _TransfersSectionState extends ConsumerState<TransfersSection> {
           );
         }
       }
+      // Drop IDs for transfers that have aged out of the list so the
+      // dedupe set tracks only currently-visible transfers and cannot
+      // grow without bound over a long session (audit #42).
+      _announced.retainAll(list.map((t) => t.id));
     });
 
     final transfers = ref.watch(transfersStreamProvider).value ?? const [];
