@@ -69,6 +69,22 @@ class PlatformNetworkSource implements NetworkSource {
 
   /// `192.168.1.34` → `192.168.1.0/24`. Treats /24 as the trust unit, which
   /// matches typical home routers. Returns null on malformed input.
+  ///
+  /// v1 LIMITATION (audit #36): the prefix length is hardcoded to /24 rather
+  /// than derived from the real netmask. This is deliberate:
+  ///   * dart:io `NetworkInterface`/`InterfaceAddress` (the only source on the
+  ///     Ethernet path — network_info_plus is Wi-Fi-only) exposes no netmask,
+  ///     so there is nothing to derive from for wired links.
+  ///   * network_info_plus `getWifiSubmask()` exists for Wi-Fi but is null /
+  ///     unreliable on several platforms (notably Android).
+  ///   * the result feeds [NetworkInfo.fingerprint], which keys the persisted
+  ///     trusted-networks store; varying the prefix per-platform would change
+  ///     the fingerprint of an unchanged physical network and silently drop
+  ///     existing trust.
+  /// Consequence: networks that are not /24 (e.g. a /16 or /23) are bucketed
+  /// at /24 granularity for trust purposes. Acceptable for v1's home-LAN
+  /// target; revisit with a netmask-aware prefix (and a fingerprint migration)
+  /// if non-/24 deployments become a real use case.
   static String? deriveSubnet(String? ipv4) {
     if (ipv4 == null) return null;
     final parts = ipv4.split('.');

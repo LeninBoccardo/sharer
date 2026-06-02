@@ -13,6 +13,12 @@ class NetworkInfo {
 
   /// CIDR-style /24 prefix derived from [ipv4], used as the trust key for
   /// the subnet. Null when [ipv4] is unknown.
+  ///
+  /// The prefix is always /24 in v1 (see
+  /// `PlatformNetworkSource.deriveSubnet`, audit #36): non-/24 networks are
+  /// bucketed at /24 granularity because no reliable netmask is available on
+  /// all platforms and changing the prefix would break stored trust
+  /// [fingerprint]s.
   final String? subnet;
 
   const NetworkInfo({
