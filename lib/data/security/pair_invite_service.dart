@@ -635,6 +635,17 @@ class PairInviteService {
       _log('markLocalMatched no-op: already declined id=$inviteId');
       return null;
     }
+    // Audit #35: ordering contract — peer-derived routing state
+    // (peerCertFingerprintFor / peerHostFor, both of which read
+    // `_pending[inviteId]`) MUST be read by the caller BEFORE this
+    // method runs. The flip below emits a `localMatched` event and then
+    // calls `_maybeCommit`, which — when the peer has already matched —
+    // commits the pair and REMOVES the `_Pending` entry. After that the
+    // routing look-ups return null. InviteController.finalize() relies on
+    // this: it captures peerCertFp/capturedHost into locals first, then
+    // awaits markLocalMatched. Do not move those look-ups after the flip,
+    // and do not re-read mutable service state from a `localMatched`
+    // stream subscriber — the entry may already be gone by then.
     p.localMatched = true;
     final identity = await _identity.get();
     final canonical = _finalizeCanonical(

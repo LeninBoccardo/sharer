@@ -198,6 +198,30 @@ void main() {
     expect((await pairedA.getAll()).single.deviceId, idB.id);
   });
 
+  test('peer routing state survives read-before-flip but is gone after '
+      'markLocalMatched commits (audit #35 ordering contract)', () async {
+    final r = await runHandshake();
+    // Peer matches first so a's markLocalMatched will commit-and-remove in
+    // the same call.
+    final bMatch = await b.markLocalMatched(r.inviteId);
+    await a.recordRemoteFinalize(
+      inviteId: r.inviteId,
+      senderId: idB.id,
+      verdict: 'match',
+      signatureBase64: bMatch!.signatureBase64,
+    );
+    // Read-before-flip: routing state is present.
+    expect(a.peerCertFingerprintFor(r.inviteId), isNotNull,
+        reason: 'consumer must read cert fp before markLocalMatched');
+    final signed = await a.markLocalMatched(r.inviteId);
+    expect(signed, isNotNull);
+    // After the commit-and-remove the entry is gone — proving why the
+    // controller captures routing into locals first.
+    expect(a.peerCertFingerprintFor(r.inviteId), isNull,
+        reason: '_maybeCommit removed the pending entry');
+    expect(a.peerHostFor(r.inviteId), isNull);
+  });
+
   test('peer signs finalize with the wrong PSK → recordRemoteFinalize '
       'rejects without committing', () async {
     final r = await runHandshake();

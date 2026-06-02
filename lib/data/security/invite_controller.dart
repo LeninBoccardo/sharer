@@ -159,6 +159,13 @@ class InviteController {
     required bool match,
   }) async {
     final identity = await _identityRepo.get();
+    // Audit #35: read peer-derived routing state (cert fingerprint +
+    // captured host) BEFORE flipping local match below. markLocalMatched
+    // can commit-and-remove the in-flight entry (when the peer already
+    // matched), after which peerCertFingerprintFor / peerHostFor return
+    // null. Capturing into locals here keeps finalize able to POST even
+    // on the commit-in-the-same-call path. See PairInviteService
+    // .markLocalMatched ordering contract.
     final peerCertFp = _service.peerCertFingerprintFor(inviteId);
     // Slice 5.1.2: prefer the source-IP captured by the HTTP server
     // when /pair-invite landed (responder side). Falls back to mDNS
