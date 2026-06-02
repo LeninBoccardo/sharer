@@ -176,8 +176,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 }
 
-class _EmptyState extends StatelessWidget {
+class _EmptyState extends ConsumerStatefulWidget {
   const _EmptyState();
+
+  @override
+  ConsumerState<_EmptyState> createState() => _EmptyStateState();
+}
+
+class _EmptyStateState extends ConsumerState<_EmptyState> {
+  bool _scanning = false;
+  Timer? _scanTimer;
+
+  @override
+  void dispose() {
+    _scanTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _scan() async {
+    if (_scanning) return;
+    setState(() => _scanning = true);
+    // Re-announce + re-listen burst, the same seam the foreground /
+    // share-open triggers use. Best-effort: refreshDiscovery is a
+    // trust-gated no-op in quiet mode (and before discovery starts), so
+    // this is user feedback as much as an actual rescan.
+    await refreshDiscovery(ref);
+    if (!mounted) return;
+    // Keep the spinner up briefly so the tap registers as an action even
+    // when discovery had nothing to restart.
+    _scanTimer?.cancel();
+    _scanTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) return;
+      setState(() => _scanning = false);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -196,6 +228,18 @@ class _EmptyState extends StatelessWidget {
             style: theme.textTheme.bodyMedium
                 ?.copyWith(color: theme.colorScheme.outline),
             textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          FilledButton.tonalIcon(
+            icon: _scanning
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+            label: Text(_scanning ? 'Scanning…' : 'Scan for new peers'),
+            onPressed: _scanning ? null : _scan,
           ),
         ],
       ),
