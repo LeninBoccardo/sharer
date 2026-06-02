@@ -102,12 +102,32 @@ class _TransferCard extends ConsumerWidget {
                 ),
               ),
             ],
-            if (t.status == TransferStatus.failed)
+            if (t.status == TransferStatus.failed) ...[
               Text(
                 t.errorMessage ?? 'Transfer failed',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.error),
               ),
+              const SizedBox(height: 12),
+              // "Peer not reachable -> retry" (ux.md). v1 retries from zero;
+              // shown only when the source can be re-opened.
+              if (t.canRetry)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Retry'),
+                    onPressed: () =>
+                        ref.read(transferServiceProvider).retry(t.id),
+                  ),
+                )
+              else
+                Text(
+                  'Source no longer available — share or pick the file again.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.outline),
+                ),
+            ],
             if (t.status == TransferStatus.cancelled)
               Text(
                 'Cancelled',

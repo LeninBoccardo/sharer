@@ -62,6 +62,14 @@ class TransferServiceImpl implements TransferService {
   /// (rather than `failed`). The entry is removed when the upload settles.
   final Map<String, Completer<void>> _cancelSignals = {};
 
+  /// Phase 4 (retry): everything needed to re-run a failed upload from
+  /// zero, keyed by transferId. Populated in [send] only when a `reopen`
+  /// factory was supplied; consulted by [retry]; dropped on a
+  /// completed/cancelled settle and on terminal eviction (a completed or
+  /// cancelled source may be deleted, so it must never be re-opened). A
+  /// FAILED settle keeps the spec so the user can retry.
+  final Map<String, _RetrySpec> _retry = {};
+
   TransferServiceImpl({
     required HttpFileClient client,
     required HttpFileServer server,
@@ -90,6 +98,7 @@ class TransferServiceImpl implements TransferService {
   Future<Transfer> send({
     required Peer peer,
     required FilePayload file,
+    Stream<List<int>> Function()? reopen,
   }) async {
     if (!peer.isReachable) {
       throw StateError('Peer ${peer.id} is not reachable (no host/port).');
@@ -120,8 +129,26 @@ class TransferServiceImpl implements TransferService {
       direction: TransferDirection.sending,
       startedAt: DateTime.now(),
       status: TransferStatus.inProgress,
+      // Phase 4 (retry): only retryable if the caller gave us a way to
+      // re-open the source. The first upload still consumes `file`.
+      canRetry: reopen != null,
     );
     _put(transfer);
+
+    if (reopen != null) {
+      _retry[transfer.id] = _RetrySpec(
+        peer: peer,
+        identity: identity,
+        paired: paired,
+        // Build a FRESH streamed FilePayload each retry — never buffers.
+        rebuild: () => FilePayload(
+          fileName: file.fileName,
+          sizeBytes: file.sizeBytes,
+          mimeType: file.mimeType,
+          bytes: reopen(),
+        ),
+      );
+    }
 
     // Fire-and-forget the actual upload; progress + completion arrive
     // via the watchAll stream so the caller's Future resolving immediately
@@ -154,6 +181,38 @@ class TransferServiceImpl implements TransferService {
     }
     _log('Cancel requested id=$transferId');
     signal.complete();
+  }
+
+  @override
+  Future<void> retry(String transferId) async {
+    final current = _byId[transferId];
+    final spec = _retry[transferId];
+    // Idempotent: only a known, failed, outgoing transfer that still has a
+    // retained re-open source can be retried.
+    if (current == null ||
+        current.status != TransferStatus.failed ||
+        current.direction != TransferDirection.sending ||
+        spec == null) {
+      return;
+    }
+    _log('Retry requested id=$transferId');
+    // Reuse the same id so watchAll reflects the failed -> inProgress ->
+    // completed transition in place (the UI tile/screen updates, no new
+    // row). bytesTransferred resets to 0 — v1 retries from zero, not a
+    // resume. (errorMessage is left set but is only shown in the failed
+    // state, so it is invisible while inProgress/completed.)
+    final refreshed = current.copyWith(
+      status: TransferStatus.inProgress,
+      bytesTransferred: 0,
+    );
+    _put(refreshed);
+    unawaited(_runUpload(
+      refreshed,
+      spec.peer,
+      spec.rebuild(),
+      spec.identity,
+      spec.paired,
+    ));
   }
 
   Future<void> _runUpload(
@@ -228,6 +287,9 @@ class TransferServiceImpl implements TransferService {
         completedAt: DateTime.now(),
         savedPath: result.savedPath,
       ));
+      // Completed: the source is done; drop the retry spec so a deleted
+      // source can never be re-opened.
+      _retry.remove(initial.id);
       _log('Send done id=${initial.id} bytes=${result.bytesSent}');
     } catch (e, st) {
       // Audit #28: a completed cancel signal means the user aborted this
@@ -239,6 +301,10 @@ class TransferServiceImpl implements TransferService {
           status: TransferStatus.cancelled,
           completedAt: DateTime.now(),
         ));
+        // Cancelled: the share path deletes the cached source on a
+        // cancelled settle, so drop the retry spec — re-opening a deleted
+        // file would just fail.
+        _retry.remove(initial.id);
         _log('Send cancelled id=${initial.id}');
         return;
       }
@@ -379,6 +445,9 @@ class TransferServiceImpl implements TransferService {
     final dropped = <String>{};
     for (final e in terminals.take(toDrop)) {
       _byId.remove(e.key);
+      // Drop any retry spec for an evicted terminal so a long session
+      // can't leak re-open closures past the bounded transfer list.
+      _retry.remove(e.key);
       dropped.add(e.key);
     }
     _orderedIds.removeWhere(dropped.contains);
@@ -415,4 +484,22 @@ class _UploadCancelled implements Exception {
   const _UploadCancelled();
   @override
   String toString() => 'upload cancelled';
+}
+
+/// Phase 4 (retry): the retained state needed to re-run a failed upload.
+/// [rebuild] returns a FRESH streamed [FilePayload] (re-opening the source)
+/// on every call, so a retry never buffers the file. The identity + paired
+/// device are captured at send() time so a retry signs/pins identically.
+class _RetrySpec {
+  _RetrySpec({
+    required this.peer,
+    required this.rebuild,
+    required this.identity,
+    required this.paired,
+  });
+
+  final Peer peer;
+  final FilePayload Function() rebuild;
+  final DeviceIdentity identity;
+  final PairedDevice? paired;
 }

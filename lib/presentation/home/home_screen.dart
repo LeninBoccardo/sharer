@@ -11,6 +11,7 @@ import '../../data/share/incoming_share_service.dart';
 import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
+import '../../domain/entities/transfer.dart';
 import '../../domain/repositories/transfer_service.dart';
 import '../diagnostics/diagnostics_screen.dart';
 import '../pairing/devices_screen.dart';
@@ -325,7 +326,14 @@ class _PeerTile extends ConsumerWidget {
         // NOT delete the cached file until the transfer has drained it,
         // so defer the delete until this transfer reaches a terminal
         // status (completed/failed) on watchAll().
-        final transfer = await transferService.send(peer: peer, file: payload);
+        final transfer = await transferService.send(
+          peer: peer,
+          file: payload,
+          // Phase 4 (retry): the cached share file stays on disk until a
+          // completed/cancelled settle (see _deleteWhenDrained), so a
+          // failed send can re-open it from zero.
+          reopen: () => File(shared.path).openRead(),
+        );
         started.add(transfer.id);
         unawaited(_deleteWhenDrained(
           transferService,
@@ -361,13 +369,16 @@ class _PeerTile extends ConsumerWidget {
     return started;
   }
 
-  /// Audit #5: wait for [transferId] to reach a terminal status on the
-  /// transfer stream, then delete the cached share file. Terminal status
-  /// is a safe "file fully read" signal: TransferServiceImpl marks
-  /// `completed` only after the upload stream is drained, and `failed`
-  /// (and `cancelled`) only after the upload future settles — no further
-  /// reads happen past either. Best-effort: if the stream closes (app
-  /// teardown) before a terminal status, deleteFiles still runs so we
+  /// Audit #5 + Phase 4 (retry): wait for [transferId] to drain, then
+  /// delete the cached share file. The drain signal is `completed` OR
+  /// `cancelled` — deliberately NOT `failed`: a failed share send keeps its
+  /// cache file so the user can retry from zero (retry re-opens it). A
+  /// permanently-failed-and-never-retried file is reaped by the existing
+  /// 24h stale-cache sweep in PendingSharesController, so the leak window
+  /// is bounded. TransferServiceImpl marks `completed` only after the
+  /// upload stream is drained and `cancelled` only after the upload future
+  /// settles, so no further reads happen past either. Best-effort: if the
+  /// stream closes (app teardown) before then, deleteFiles still runs so we
   /// don't leak the cache.
   Future<void> _deleteWhenDrained(
     TransferService transferService,
@@ -378,7 +389,11 @@ class _PeerTile extends ConsumerWidget {
     try {
       await for (final transfers in transferService.watchAll()) {
         final t = transfers.where((t) => t.id == transferId).firstOrNull;
-        if (t != null && t.isTerminal) break;
+        if (t != null &&
+            (t.status == TransferStatus.completed ||
+                t.status == TransferStatus.cancelled)) {
+          break;
+        }
       }
     } catch (_) {
       // Fall through to delete regardless — a stream error means the
@@ -537,8 +552,22 @@ class _PeerTile extends ConsumerWidget {
         bytes: stream,
         mimeType: lookupMimeType(picked.name),
       );
+      // Phase 4 (retry): file_picker usually populates picked.path with a
+      // cached copy (desktop + most Android); when present, a failed send
+      // can be retried by re-opening it. Best-effort — if the copy is gone
+      // at retry time the re-stream just fails again. Web has no path, so
+      // those transfers are non-retryable.
+      final path = picked.path;
+      Stream<List<int>> Function()? reopen;
+      if (path != null) {
+        reopen = () => File(path).openRead();
+      }
       try {
-        final transfer = await transferService.send(peer: peer, file: payload);
+        final transfer = await transferService.send(
+          peer: peer,
+          file: payload,
+          reopen: reopen,
+        );
         started.add(transfer.id);
         queued++;
       } catch (_) {

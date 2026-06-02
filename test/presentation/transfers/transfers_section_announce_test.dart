@@ -22,12 +22,19 @@ class _ControllableTransferService implements TransferService {
   Stream<List<Transfer>> watchAll() => _controller.stream;
 
   @override
-  Future<Transfer> send({required Peer peer, required FilePayload file}) {
+  Future<Transfer> send({
+    required Peer peer,
+    required FilePayload file,
+    Stream<List<int>> Function()? reopen,
+  }) {
     throw UnimplementedError('send() not used by this test');
   }
 
   @override
   Future<void> cancel(String transferId) async {}
+
+  @override
+  Future<void> retry(String transferId) async {}
 }
 
 Transfer _received(String id) => Transfer(

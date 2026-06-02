@@ -27,13 +27,21 @@ class _FakeTransferService implements TransferService {
   }
 
   final cancelled = <String>[];
+  final retried = <String>[];
 
   @override
-  Future<Transfer> send({required Peer peer, required FilePayload file}) =>
+  Future<Transfer> send({
+    required Peer peer,
+    required FilePayload file,
+    Stream<List<int>> Function()? reopen,
+  }) =>
       throw UnimplementedError();
 
   @override
   Future<void> cancel(String transferId) async => cancelled.add(transferId);
+
+  @override
+  Future<void> retry(String transferId) async => retried.add(transferId);
 
   Future<void> dispose() => _controller.close();
 }
@@ -43,6 +51,7 @@ Transfer _t(
   TransferStatus status, {
   int sent = 0,
   int total = 100,
+  bool canRetry = false,
 }) =>
     Transfer(
       id: id,
@@ -54,6 +63,7 @@ Transfer _t(
       direction: TransferDirection.sending,
       status: status,
       startedAt: DateTime.utc(2026, 6, 2),
+      canRetry: canRetry,
     );
 
 Widget _harness(_FakeTransferService svc) => ProviderScope(
@@ -110,6 +120,35 @@ void main() {
     await tester.pump();
 
     expect(svc.cancelled, ['t1']);
+  });
+
+  testWidgets('failed + canRetry shows a Retry button that calls retry(id)',
+      (tester) async {
+    final svc = _FakeTransferService();
+    addTearDown(svc.dispose);
+    svc.emit([_t('t1', TransferStatus.failed, canRetry: true)]);
+
+    await tester.pumpWidget(_harness(svc));
+    await tester.pump();
+
+    expect(find.widgetWithText(FilledButton, 'Retry'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Retry'));
+    await tester.pump();
+
+    expect(svc.retried, ['t1']);
+  });
+
+  testWidgets('failed without a retainable source shows the gone hint, no Retry',
+      (tester) async {
+    final svc = _FakeTransferService();
+    addTearDown(svc.dispose);
+    svc.emit([_t('t1', TransferStatus.failed, canRetry: false)]);
+
+    await tester.pumpWidget(_harness(svc));
+    await tester.pump();
+
+    expect(find.textContaining('Source no longer available'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Retry'), findsNothing);
   });
 
   testWidgets('shows a spinner until the scoped transfer appears',

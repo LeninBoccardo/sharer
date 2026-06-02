@@ -13,10 +13,17 @@ class FakeTransferService implements TransferService {
   Stream<List<Transfer>> watchAll() => Stream<List<Transfer>>.value(transfers);
 
   @override
-  Future<Transfer> send({required Peer peer, required FilePayload file}) {
+  Future<Transfer> send({
+    required Peer peer,
+    required FilePayload file,
+    Stream<List<int>> Function()? reopen,
+  }) {
     throw UnimplementedError('send() not used by layout tests');
   }
 
   @override
   Future<void> cancel(String transferId) async {}
+
+  @override
+  Future<void> retry(String transferId) async {}
 }

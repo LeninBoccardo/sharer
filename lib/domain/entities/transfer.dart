@@ -18,6 +18,13 @@ class Transfer {
   final String? savedPath;
   final String? errorMessage;
 
+  /// True when the (outgoing) transfer retains a re-open source so a
+  /// failed send can be retried from zero. Lets the UI show/hide the retry
+  /// CTA without reaching into the data layer. The re-open factory itself
+  /// lives only in the data impl's retry registry, never on this entity —
+  /// the entity stays pure/serializable.
+  final bool canRetry;
+
   const Transfer({
     required this.id,
     required this.peerId,
@@ -31,6 +38,7 @@ class Transfer {
     this.completedAt,
     this.savedPath,
     this.errorMessage,
+    this.canRetry = false,
   });
 
   Transfer copyWith({
@@ -39,6 +47,7 @@ class Transfer {
     DateTime? completedAt,
     String? savedPath,
     String? errorMessage,
+    bool? canRetry,
   }) {
     return Transfer(
       id: id,
@@ -53,6 +62,7 @@ class Transfer {
       completedAt: completedAt ?? this.completedAt,
       savedPath: savedPath ?? this.savedPath,
       errorMessage: errorMessage ?? this.errorMessage,
+      canRetry: canRetry ?? this.canRetry,
     );
   }
 
