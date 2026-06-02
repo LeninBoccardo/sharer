@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../domain/entities/transfer.dart';
+import 'transfer_rate_line.dart';
 
 /// Compact list of in-flight + recently-completed transfers, rendered
 /// below the peer list on the home screen. Also pops a snackbar when an
@@ -122,6 +123,8 @@ class _TransferTile extends ConsumerWidget {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.outline),
               ),
+              // Live throughput + ETA (renders nothing until it has a rate).
+              TransferRateLine(transfer: transfer),
               // Only outgoing transfers can be cancelled; cancel() is a
               // no-op for incoming (driven by the server) per audit #28.
               if (isSend)

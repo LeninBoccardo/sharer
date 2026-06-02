@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../domain/entities/transfer.dart';
+import 'transfer_rate_line.dart';
 
 /// Dedicated post-tap transfer screen (docs/v1/ux.md primary send flow).
 /// Scoped to the [transferIds] started by a peer tap (or a single id when
@@ -88,6 +89,8 @@ class _TransferCard extends ConsumerWidget {
                   minHeight: 8,
                 ),
               ),
+              const SizedBox(height: 8),
+              TransferRateLine(transfer: t),
               const SizedBox(height: 12),
               Align(
                 alignment: Alignment.centerRight,
