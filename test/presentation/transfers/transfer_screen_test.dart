@@ -26,12 +26,14 @@ class _FakeTransferService implements TransferService {
     yield* _controller.stream;
   }
 
+  final cancelled = <String>[];
+
   @override
   Future<Transfer> send({required Peer peer, required FilePayload file}) =>
       throw UnimplementedError();
 
   @override
-  Future<void> cancel(String transferId) async {}
+  Future<void> cancel(String transferId) async => cancelled.add(transferId);
 
   Future<void> dispose() => _controller.close();
 }
@@ -93,6 +95,21 @@ void main() {
 
     expect(find.byIcon(Icons.check_circle), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsNothing);
+  });
+
+  testWidgets('Cancel button calls cancel(id) for an in-flight transfer',
+      (tester) async {
+    final svc = _FakeTransferService();
+    addTearDown(svc.dispose);
+    svc.emit([_t('t1', TransferStatus.inProgress, sent: 40)]);
+
+    await tester.pumpWidget(_harness(svc));
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pump();
+
+    expect(svc.cancelled, ['t1']);
   });
 
   testWidgets('shows a spinner until the scoped transfer appears',

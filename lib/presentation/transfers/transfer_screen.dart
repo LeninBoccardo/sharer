@@ -80,7 +80,7 @@ class _TransferCard extends ConsumerWidget {
             ),
             const SizedBox(height: 12),
             if (t.status == TransferStatus.inProgress ||
-                t.status == TransferStatus.pending)
+                t.status == TransferStatus.pending) ...[
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: LinearProgressIndicator(
@@ -88,6 +88,20 @@ class _TransferCard extends ConsumerWidget {
                   minHeight: 8,
                 ),
               ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.close),
+                  label: const Text('Cancel'),
+                  // cancel() is idempotent (no-op on unknown/terminal/
+                  // incoming, audit #28), so a tap after the transfer has
+                  // already settled is harmless.
+                  onPressed: () =>
+                      ref.read(transferServiceProvider).cancel(t.id),
+                ),
+              ),
+            ],
             if (t.status == TransferStatus.failed)
               Text(
                 t.errorMessage ?? 'Transfer failed',

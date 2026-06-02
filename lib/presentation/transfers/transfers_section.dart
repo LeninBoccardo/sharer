@@ -63,13 +63,13 @@ class _TransfersSectionState extends ConsumerState<TransfersSection> {
   }
 }
 
-class _TransferTile extends StatelessWidget {
+class _TransferTile extends ConsumerWidget {
   const _TransferTile({required this.transfer});
 
   final Transfer transfer;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final isSend = transfer.direction == TransferDirection.sending;
 
@@ -122,6 +122,22 @@ class _TransferTile extends StatelessWidget {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.outline),
               ),
+              // Only outgoing transfers can be cancelled; cancel() is a
+              // no-op for incoming (driven by the server) per audit #28.
+              if (isSend)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    icon: const Icon(Icons.close, size: 16),
+                    label: const Text('Cancel'),
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    onPressed: () =>
+                        ref.read(transferServiceProvider).cancel(transfer.id),
+                  ),
+                ),
             ],
             if (transfer.status == TransferStatus.failed &&
                 transfer.errorMessage != null) ...[
