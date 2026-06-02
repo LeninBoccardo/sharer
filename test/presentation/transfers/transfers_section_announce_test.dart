@@ -25,6 +25,9 @@ class _ControllableTransferService implements TransferService {
   Future<Transfer> send({required Peer peer, required FilePayload file}) {
     throw UnimplementedError('send() not used by this test');
   }
+
+  @override
+  Future<void> cancel(String transferId) async {}
 }
 
 Transfer _received(String id) => Transfer(

@@ -47,6 +47,12 @@ class TransferServiceImpl implements TransferService {
   final _controller = StreamController<List<Transfer>>.broadcast();
   StreamSubscription<IncomingEvent>? _incomingSub;
 
+  /// Audit #28: per-outgoing-transfer cancel signal. Present only while an
+  /// upload is in flight; completing it aborts the upload stream and the
+  /// catch in [_runUpload] then records [TransferStatus.cancelled]
+  /// (rather than `failed`). The entry is removed when the upload settles.
+  final Map<String, Completer<void>> _cancelSignals = {};
+
   TransferServiceImpl({
     required HttpFileClient client,
     required HttpFileServer server,
@@ -121,6 +127,26 @@ class TransferServiceImpl implements TransferService {
     return transfer;
   }
 
+  @override
+  Future<void> cancel(String transferId) async {
+    final current = _byId[transferId];
+    // Idempotent: ignore unknown ids, already-terminal transfers, and
+    // incoming transfers (those are driven by HttpFileServer events, not
+    // by _runUpload, so there is no outgoing stream to abort here).
+    if (current == null ||
+        current.isTerminal ||
+        current.direction != TransferDirection.sending) {
+      return;
+    }
+    final signal = _cancelSignals[transferId];
+    if (signal == null || signal.isCompleted) {
+      // No in-flight upload (e.g. it settled between the lookup and now).
+      return;
+    }
+    _log('Cancel requested id=$transferId');
+    signal.complete();
+  }
+
   Future<void> _runUpload(
     Transfer initial,
     Peer peer,
@@ -128,6 +154,8 @@ class TransferServiceImpl implements TransferService {
     DeviceIdentity sender,
     PairedDevice? paired,
   ) async {
+    final cancelSignal = Completer<void>();
+    _cancelSignals[initial.id] = cancelSignal;
     final recipientPsk = paired?.psk;
     final recipientCertFingerprint = paired?.certFingerprint;
     // Slice 5.4: prefer the IP we cached from any HMAC-verified inbound
@@ -150,11 +178,22 @@ class TransferServiceImpl implements TransferService {
         }
       }
     }
+    // Audit #28: wrap the payload stream so a cancel signal aborts the
+    // in-flight upload. When [cancelSignal] completes, the wrapped stream
+    // emits an error, which propagates out of HttpFileClient.upload's
+    // `request.addStream` and tears down the connection. The catch below
+    // then records `cancelled` instead of `failed`.
+    final cancellableFile = FilePayload(
+      fileName: file.fileName,
+      sizeBytes: file.sizeBytes,
+      mimeType: file.mimeType,
+      bytes: _abortable(file.bytes, cancelSignal.future),
+    );
     try {
       final result = await _client.upload(
         host: host,
         port: port,
-        file: file,
+        file: cancellableFile,
         sender: sender,
         // Audit #30: bind the recipient's own deviceId into the HMAC.
         // peer.id is the PairedDevice.deviceId we send to; the receiver
@@ -182,6 +221,18 @@ class TransferServiceImpl implements TransferService {
       ));
       _log('Send done id=${initial.id} bytes=${result.bytesSent}');
     } catch (e, st) {
+      // Audit #28: a completed cancel signal means the user aborted this
+      // upload — record `cancelled`, not `failed`, and skip the reactive
+      // forget path (a torn-down stream is not a peer rejection).
+      if (cancelSignal.isCompleted) {
+        final current = _byId[initial.id] ?? initial;
+        _put(current.copyWith(
+          status: TransferStatus.cancelled,
+          completedAt: DateTime.now(),
+        ));
+        _log('Send cancelled id=${initial.id}');
+        return;
+      }
       developer.log('Send failed', error: e, stackTrace: st, name: _logName);
       // Slice 5.4 reactive forget: a 401 from a peer that's in our
       // PairedDevices store means they removed us. Drop the local
@@ -204,7 +255,56 @@ class TransferServiceImpl implements TransferService {
         errorMessage: e.toString(),
       ));
       _log('Send failed id=${initial.id}: $e');
+    } finally {
+      // Audit #28: the upload has settled (done / failed / cancelled) —
+      // drop the cancel signal so a late cancel() call is a no-op and the
+      // map doesn't leak across a long session.
+      _cancelSignals.remove(initial.id);
     }
+  }
+
+  /// Audit #28: forwards [source] chunks until [cancel] completes, at
+  /// which point the returned stream emits an error and stops — aborting
+  /// any consumer (here, the upload's `request.addStream`). The error
+  /// type is internal; the caller distinguishes cancel from a real
+  /// failure via the cancel Completer, not by inspecting this error.
+  Stream<List<int>> _abortable(
+    Stream<List<int>> source,
+    Future<void> cancel,
+  ) {
+    final out = StreamController<List<int>>();
+    var cancelled = false;
+    late StreamSubscription<List<int>> sub;
+
+    Future<void> stop() async {
+      await sub.cancel();
+      if (!out.isClosed) await out.close();
+    }
+
+    cancel.then((_) {
+      if (cancelled || out.isClosed) return;
+      cancelled = true;
+      out.addError(const _UploadCancelled());
+      stop();
+    });
+
+    sub = source.listen(
+      (chunk) {
+        if (!cancelled && !out.isClosed) out.add(chunk);
+      },
+      onError: (Object e, StackTrace st) {
+        if (!cancelled && !out.isClosed) out.addError(e, st);
+      },
+      onDone: () {
+        if (!cancelled && !out.isClosed) out.close();
+      },
+      cancelOnError: true,
+    );
+    // Pausing the upload sink propagates back-pressure to the source.
+    out.onPause = sub.pause;
+    out.onResume = sub.resume;
+    out.onCancel = sub.cancel;
+    return out.stream;
   }
 
   void _onIncoming(IncomingEvent event) {
@@ -283,4 +383,13 @@ class TransferServiceImpl implements TransferService {
     developer.log(message, name: _logName);
     debugPrint('[$_logName] $message');
   }
+}
+
+/// Audit #28: marker error emitted into the upload stream when a transfer
+/// is cancelled. Not surfaced to callers — the cancel Completer is the
+/// source of truth; this just unwinds `request.addStream`.
+class _UploadCancelled implements Exception {
+  const _UploadCancelled();
+  @override
+  String toString() => 'upload cancelled';
 }

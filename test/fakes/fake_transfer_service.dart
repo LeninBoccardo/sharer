@@ -16,4 +16,7 @@ class FakeTransferService implements TransferService {
   Future<Transfer> send({required Peer peer, required FilePayload file}) {
     throw UnimplementedError('send() not used by layout tests');
   }
+
+  @override
+  Future<void> cancel(String transferId) async {}
 }
