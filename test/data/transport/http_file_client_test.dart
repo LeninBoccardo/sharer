@@ -21,6 +21,22 @@ Future<void> _settle() async {
   }
 }
 
+// An aborted upload (audit #26) leaves the server mid-read with the partial
+// file still open until the dropped socket propagates; on Windows that briefly
+// locks the temp dir, so retry the delete to give the server's handler time to
+// close its sink and delete the partial.
+Future<void> _deleteTmp(Directory dir) async {
+  for (var i = 0; i < 20; i++) {
+    try {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+      return;
+    } on FileSystemException {
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+  }
+  if (dir.existsSync()) dir.deleteSync(recursive: true);
+}
+
 void main() {
   late Directory tmpDir;
   late StreamController<bool> trust;
@@ -48,7 +64,7 @@ void main() {
     client.close();
     await server.dispose();
     await trust.close();
-    tmpDir.deleteSync(recursive: true);
+    await _deleteTmp(tmpDir);
   });
 
   test('uploads a streamed payload end-to-end', () async {
@@ -232,6 +248,26 @@ void main() {
       ),
       throwsA(isA<UploadStatusException>()
           .having((e) => e.statusCode, 'statusCode', 400)),
+    );
+  });
+
+  test('aborts when the stream yields fewer bytes than sizeBytes (audit #26)',
+      () async {
+    final actual = utf8.encode('short');
+    await expectLater(
+      () => client.upload(
+        host: '127.0.0.1',
+        port: server.boundPort!,
+        file: FilePayload(
+          fileName: 'liar.txt',
+          sizeBytes: actual.length + 100, // declares more than it streams
+          bytes: Stream.fromIterable([actual]),
+        ),
+        sender: stubIdentity(id: 'sender-id', name: 'Sender'),
+      ),
+      throwsA(isA<PayloadSizeMismatchException>()
+          .having((e) => e.declaredBytes, 'declaredBytes', actual.length + 100)
+          .having((e) => e.actualBytes, 'actualBytes', actual.length)),
     );
   });
 }

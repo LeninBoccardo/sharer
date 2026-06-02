@@ -45,6 +45,34 @@ class UploadStatusException implements Exception {
       '${reason == null ? '' : 'reason=$reason '}(POST $uri)';
 }
 
+/// Audit #26: typed failure when the payload stream drains a different
+/// number of plaintext bytes than [FilePayload.sizeBytes] promised.
+///
+/// `Content-Length` is computed up-front from `sizeBytes` (directly for
+/// plaintext, via [encryptedLengthFor] for the encrypted path). If the
+/// stream is short, the declared length never arrives and the request
+/// stalls / writes a truncated file on the receiver; if it overruns, the
+/// HTTP framing is corrupt. We detect the divergence the moment
+/// [HttpClientRequest.addStream] returns — before awaiting `close()`, so
+/// we never block on the never-arriving bytes — and fail the transfer
+/// loudly instead of letting it hang or silently truncate.
+class PayloadSizeMismatchException implements Exception {
+  PayloadSizeMismatchException({
+    required this.declaredBytes,
+    required this.actualBytes,
+    required this.fileName,
+  });
+  final int declaredBytes;
+  final int actualBytes;
+  final String fileName;
+
+  @override
+  String toString() =>
+      'Payload size mismatch for "$fileName": declared $declaredBytes '
+      'bytes but stream produced $actualBytes. Aborting to avoid a '
+      'truncated/corrupt transfer.';
+}
+
 /// Slice 5.x.2.3: typed failure for a production (TLS) upload to a
 /// paired peer whose entry has no `certFingerprint` (PairedDevice's doc
 /// comment explicitly allows this for pre-TLS / pre-5.1 rows). Without
@@ -197,6 +225,26 @@ class HttpFileClient {
       }
 
       await request.addStream(wireStream);
+
+      // Audit #26: Content-Length was set from file.sizeBytes (via
+      // wireSize). If the stream produced a different number of
+      // plaintext bytes, the on-wire length no longer matches the
+      // declared length: a short stream would leave request.close()
+      // waiting for bytes that never come (the request hangs until the
+      // owned pinning client is force-closed in finally) and the
+      // receiver writes a truncated file; an overrun corrupts framing.
+      // Detect the divergence here — before awaiting close() — and abort
+      // with a typed error so the transfer fails fast instead of hanging
+      // or silently truncating. addStream has fully drained file.bytes
+      // by now, so bytesSent is final.
+      if (bytesSent != file.sizeBytes) {
+        throw PayloadSizeMismatchException(
+          declaredBytes: file.sizeBytes,
+          actualBytes: bytesSent,
+          fileName: file.fileName,
+        );
+      }
+
       final response = await request.close();
       final body = await response.transform(utf8.decoder).join();
 
