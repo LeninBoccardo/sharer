@@ -197,4 +197,40 @@ void main() {
     await pumpEventQueue();
     expect(await mailbox.get(r.inviteId), isNull);
   });
+
+  test('expired mailbox entry is purged even while a live invite keeps '
+      '_pending non-empty (audit #34)', () async {
+    // A live, non-expired invite keeps _pending non-empty and nothing
+    // expires on the upcoming sweep.
+    final live = await acceptOnB();
+    expect(await mailbox.get(live.inviteId), isNotNull);
+
+    // A stale persisted entry from a prior session: its _Pending
+    // counterpart is gone and its TTL is already past. Seeded AFTER
+    // acceptOnB so acceptInvite's own sweep didn't already remove it.
+    await mailbox.save(InFlightInviteEntry(
+      inviteId: 'stale-from-prior-session',
+      peerId: idA.id,
+      peerName: 'Lenin-PC',
+      peerHost: '192.168.68.99',
+      peerPort: 8080,
+      peerCertFingerprint: _idACertFp,
+      senderId: idB.id,
+      declineSignatureBase64: 'AA==',
+      expiresAt: now.subtract(const Duration(minutes: 1)),
+    ));
+    expect(await mailbox.get('stale-from-prior-session'), isNotNull);
+
+    // Trigger _purgeExpired without expiring the live invite. With the old
+    // `expiredPending.isNotEmpty || _pending.isEmpty` gate this sweep was
+    // skipped (nothing pending expired, _pending not empty), leaking the
+    // stale entry. The audit #34 unconditional purge trims it.
+    await b.markLocalMatched('non-existent-id');
+    await pumpEventQueue();
+
+    expect(await mailbox.get('stale-from-prior-session'), isNull,
+        reason: 'stale persisted entry past its TTL must be purged');
+    expect(await mailbox.get(live.inviteId), isNotNull,
+        reason: 'the still-valid live invite must be untouched');
+  });
 }

@@ -841,13 +841,18 @@ class PairInviteService {
       }
       _log('expired (in flight) id=${p.inviteId} peer=${p.peerId}');
     }
-    // Slice 5.2.4.2: trim stale mailbox entries opportunistically. The
-    // sweep timer ticks every 30s by default, so the worst case is one
-    // BG decline POST that arrives slightly after the peer's TTL has
-    // passed — peer side ignores it (5.1.2's expiry sweep). Acceptable.
-    if (_mailbox != null && (expiredPending.isNotEmpty || _pending.isEmpty)) {
-      unawaited(_mailbox.purgeExpired(n));
-    }
+    // Slice 5.2.4.2 / audit #34: trim stale mailbox entries on EVERY
+    // sweep. The mailbox is persistent (secure storage) while _pending is
+    // memory-only and reset on every process start, so a persisted entry
+    // can outlive its in-memory _Pending counterpart — e.g. the responder
+    // restarted after acceptInvite persisted it, or a commit/decline's
+    // _mailbox.remove failed. Gating the purge on `expiredPending.isNotEmpty
+    // || _pending.isEmpty` skipped that entry forever once any live invite
+    // kept _pending non-empty, leaking it (and a possible stale BG decline
+    // POST) past its TTL. purgeExpired() filters per-entry on each entry's
+    // own expiresAt and is a no-op write when nothing is stale, so running
+    // it unconditionally is both correct and self-bounded.
+    unawaited(_mailbox?.purgeExpired(n) ?? Future.value());
 
     // Audit #14: age out consumed invite nonces once no replay of the
     // corresponding body could still verify (its `expiresAt` is past).
