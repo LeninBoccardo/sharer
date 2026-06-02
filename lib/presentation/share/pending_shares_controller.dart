@@ -38,7 +38,16 @@ class PendingSharesController {
 
   PendingShares _state = PendingShares.empty;
   PendingShares get state => _state;
-  Stream<PendingShares> get stream => _stateController.stream;
+
+  /// Seeded (replay) broadcast view: every new subscriber first sees the
+  /// current [state], then every subsequent transition. This lets
+  /// `pendingSharesProvider` return the stream directly instead of
+  /// re-seeding it with `Stream.value(state).asyncExpand(...)` (audit
+  /// #52). Same pattern as MdnsPeerDiscovery.watchPeers().
+  Stream<PendingShares> get stream async* {
+    yield _state;
+    yield* _stateController.stream;
+  }
 
   Future<void> start() async {
     final initial = await _service.consumeInitial();

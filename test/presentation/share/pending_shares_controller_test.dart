@@ -125,16 +125,33 @@ void main() {
     // No throw == pass.
   });
 
+  test('stream replays the current state to a new subscriber', () async {
+    service.initial = [_file(tmp, 'a.txt')];
+    await controller.start();
+
+    final emissions = <int>[];
+    final sub = controller.stream.listen((s) => emissions.add(s.files.length));
+    await Future<void>.delayed(Duration.zero);
+
+    // Late subscriber immediately sees the pending share (audit #52).
+    expect(emissions, [1]);
+    await sub.cancel();
+  });
+
   test('emitting an empty batch is a no-op (does not bump the state)',
       () async {
     await controller.start();
     final emissions = <int>[];
     final sub = controller.stream.listen((s) => emissions.add(s.files.length));
+    await Future<void>.delayed(Duration.zero);
+    // stream replays the seeded empty state first.
+    expect(emissions, [0]);
 
     service.emit(const []);
     await Future<void>.delayed(Duration.zero);
 
-    expect(emissions, isEmpty);
+    // The empty batch added nothing beyond the replayed seed.
+    expect(emissions, [0]);
     await sub.cancel();
   });
 
@@ -143,6 +160,7 @@ void main() {
     await controller.start();
     final emissions = <int>[];
     final sub = controller.stream.listen((s) => emissions.add(s.files.length));
+    await Future<void>.delayed(Duration.zero);
 
     service.emit([_file(tmp, 'a.txt')]);
     await Future<void>.delayed(Duration.zero);
@@ -150,7 +168,8 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     await controller.clear();
 
-    expect(emissions, [1, 2, 0]);
+    // Leading 0 is the replayed seed state (audit #52).
+    expect(emissions, [0, 1, 2, 0]);
     await sub.cancel();
   });
 }

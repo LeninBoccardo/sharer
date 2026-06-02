@@ -463,13 +463,10 @@ final pendingSharesControllerProvider =
 /// to decide whether to show the "share into…" banner + flip the peer
 /// tile's tap handler.
 final pendingSharesProvider = StreamProvider<PendingShares>((ref) {
-  final controller = ref.watch(pendingSharesControllerProvider);
-  return Stream.value(controller.state).asyncExpand(
-    (initial) async* {
-      yield initial;
-      yield* controller.stream;
-    },
-  );
+  // The controller's stream is already seeded with the current state and
+  // then emits every transition (audit #52), so return it directly
+  // instead of re-seeding it here.
+  return ref.watch(pendingSharesControllerProvider).stream;
 });
 
 /// Slice 5.2.4: dispatches notification taps + action buttons. Reads
