@@ -317,6 +317,37 @@ final peerAnnouncingProvider = StreamProvider<bool>((ref) {
   return ref.watch(peerDiscoveryProvider).watchAnnouncing();
 });
 
+/// Single entry point for an event-driven discovery burst: re-sample the
+/// network (a resume can land us back on a trusted AP after roaming / a
+/// DHCP renew) then re-advertise in place. Both legs are idempotent and
+/// trust-gated — `refreshAnnouncement()` no-ops in quiet mode, `recheck()`
+/// no-ops on web — so it is safe to fire on every resume / share-UI open.
+/// Kept as ONE function so the app-foreground hook, the share-open
+/// trigger, and the empty-state "scan for new peers" button never
+/// duplicate the sequence (CLAUDE.md principle #3 + hot-path 3(c)). NOT an
+/// always-on loop: callers invoke it on discrete events.
+///
+/// Takes a [WidgetRef]: every caller is a widget (the app-root lifecycle
+/// observer, the home share-open trigger, the empty-state scan button), so
+/// the seam reads through the widget's ref.
+///
+/// `recheck()` lives on [NetworkWatcherImpl], not the
+/// [NetworkWatcherRepository] interface — it is an implementation-detail
+/// re-sample with a single caller, so this reaches it via a concrete cast
+/// rather than widening the domain interface (no premature abstraction).
+/// The load-bearing leg (`refreshAnnouncement`) is always interface-typed
+/// and always runs.
+Future<void> refreshDiscovery(WidgetRef ref) async {
+  // recheck() can flip trust -> true; do it (and let the trust stream
+  // propagate) before asking discovery to re-broadcast, so a network we
+  // just re-trusted actually starts announcing.
+  final watcher = ref.read(networkWatcherProvider);
+  if (watcher is NetworkWatcherImpl) {
+    await watcher.recheck();
+  }
+  await ref.read(peerDiscoveryProvider).refreshAnnouncement();
+}
+
 // ----- Transport (slice 3) -----
 
 final downloadsLocatorProvider = Provider<DownloadsLocator>((ref) {

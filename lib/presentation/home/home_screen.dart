@@ -36,6 +36,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// double-open on every status emission.
   final _modalShownFor = <String>{};
 
+  /// Whether we've already fired an announce-burst for the current
+  /// non-empty pending-shares window. Re-armed when the queue clears so a
+  /// second share later in the session triggers a fresh burst.
+  bool _pendingBurstFired = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Hot-path 3(c) / CLAUDE.md principle #3: kick a fresh announce+listen
+    // burst the moment the share UI opens with files already waiting (a
+    // cold-start share). Post-frame so the provider is readable after the
+    // first build; the ref.listen in build() covers shares that arrive
+    // while we're already open.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _maybeBurstForPending(ref.read(pendingSharesProvider).value);
+    });
+  }
+
+  /// Fires a single discovery burst when the pending-shares queue goes
+  /// empty -> non-empty (the user just shared into Sharer), and re-arms
+  /// once it clears. refreshDiscovery is itself trust-gated + idempotent,
+  /// so this is a no-op on an untrusted network.
+  void _maybeBurstForPending(PendingShares? shares) {
+    final hasPending = shares != null && shares.isNotEmpty;
+    if (hasPending && !_pendingBurstFired) {
+      _pendingBurstFired = true;
+      unawaited(refreshDiscovery(ref));
+    } else if (!hasPending) {
+      _pendingBurstFired = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final peersAsync = ref.watch(peersStreamProvider);
@@ -69,6 +102,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         final peer = peers.where((p) => p.id == invite.peerId).firstOrNull;
         PairInviteModal.show(context, invite: invite, peer: peer);
       });
+    });
+
+    // Announce-burst when a share arrives while the home screen is already
+    // open (the cold-start case is handled by the post-frame check in
+    // initState). Fires once per empty -> non-empty transition.
+    ref.listen(pendingSharesProvider, (_, next) {
+      _maybeBurstForPending(next.value);
     });
 
     return Scaffold(
