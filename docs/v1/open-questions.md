@@ -111,7 +111,7 @@ Unresolved design calls. Each entry should be **closed** (with the decision and 
 
 **Default if undecided:** both. Land before the relay slice.
 
-**Answer:** **both, mandatory.** Concrete LAN scenario motivating defense-in-depth: user marks a friend's home Wi-Fi as trusted and later learns a malicious ISP technician installed a sniffer on it before the visit. TLS protects bytes if both endpoints stayed configured correctly; chunk encryption survives a TLS misconfiguration or downgrade. Relay scenario is a future feature but requires the same primitive. Construction: `transferKey = HKDF(PSK ‖ transferId)`, AES-256-GCM per chunk with `nonce = transferId(8B) ‖ chunkIndex(4B)`, streaming decrypt to disk.
+**Answer:** **both, mandatory.** Concrete LAN scenario motivating defense-in-depth: user marks a friend's home Wi-Fi as trusted and later learns a malicious ISP technician installed a sniffer on it before the visit. TLS protects bytes if both endpoints stayed configured correctly; chunk encryption survives a TLS misconfiguration or downgrade. Relay scenario is a future feature but requires the same primitive. Construction: `transferKey = HKDF-SHA256(IKM=PSK, salt=transferId)` (transferId is the HKDF salt, not concatenated into the IKM), AES-256-GCM per chunk with `nonce = transferId(8B) ‖ chunkIndex(4B)`, streaming decrypt to disk.
 
 ## OQ-12 — Hardware-backed device identity (post-v1)
 

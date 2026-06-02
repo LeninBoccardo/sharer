@@ -63,7 +63,7 @@ These are enforced by the test suite at [`test/data/transport/http_file_server_t
 4. **Process-death recovery is explicit, not automatic.** A persisted in-flight marker exists so an app crash mid-handshake is recoverable, but the next launch surfaces "Previous pairing was interrupted — re-pair?" rather than auto-resuming. Resuming a half-completed handshake is unsafe (peer may have moved on).
 5. **DeviceId is a public-key fingerprint** (slice 4.5+). `deviceId = first 16 hex chars of SHA-256(Ed25519 publicKey)`. An attacker on the LAN cannot fabricate a deviceId without finding a hash preimage. The Ed25519 private key is in `flutter_secure_storage`; the public key is published in mDNS TXT and embedded in pair invites/responses.
 6. **Per-pair PSK, never shared across pairs.** Each `PairedDevice` carries its own 32-byte PSK derived independently. Compromise of one pair never exposes another.
-7. **Per-transfer key, derived not transmitted.** End-to-end chunk encryption (slice 5.3) derives `transferKey = HKDF(PSK ‖ transferId)` per upload. The PSK never encrypts bytes directly; the transferKey lifetime is one transfer.
+7. **Per-transfer key, derived not transmitted.** End-to-end chunk encryption (slice 5.3) derives `transferKey = HKDF-SHA256(IKM=PSK, salt=transferId)` per upload (transferId is the HKDF salt, not concatenated into the IKM). The PSK never encrypts bytes directly; the transferKey lifetime is one transfer.
 
 ## Hot path: share flow
 

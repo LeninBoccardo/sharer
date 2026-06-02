@@ -138,7 +138,7 @@ Construction:
 
 ```text
 For each transfer:
-  transferKey = HKDF-SHA256(PSK ‖ transferId, info="sharer-transfer-v1", 32 bytes)
+  transferKey = HKDF-SHA256(IKM=PSK, salt=transferId, info="sharer-transfer-v1", 32 bytes)
 
 For each chunk i (16–64 KB):
   nonce       = transferId(8B) ‖ chunkIndex(4B) ‖ random(0)  // 12 bytes total
@@ -151,6 +151,8 @@ Receiver:
 ```
 
 Per-chunk auth tags catch single-bit tampering at the granularity of one chunk. Decryption is streaming — plaintext never accumulates in memory. The transferKey lifetime is one transfer; PSK is never used directly to encrypt bytes.
+
+> **HKDF input mapping (implementation note).** The per-transfer key uses the PSK as the HKDF input keying material (IKM) and the fresh per-transfer `transferId` as the HKDF *salt* — not as bytes concatenated into the IKM. Concretely: `transferKey = HKDF-SHA256(IKM = PSK, salt = transferId, info = "sharer-transfer-v1", L = 32)`. Both placements bind every transfer to a unique key derived from the long-term secret plus per-transfer entropy; we use salt because that is HKDF's purpose-built input for non-secret per-derivation diversifiers and it keeps the IKM a clean 32-byte secret. The `transferId` is 12 random bytes (audit #12); its full width feeds the salt, while only its first 8 bytes also seed the GCM nonce prefix.
 
 ### Why we kept the watcher at all
 
@@ -185,6 +187,6 @@ If the watcher proves to add complexity without measurable benefit during v1 imp
 
 - No central account / login. Pairing is purely local.
 - No revocation server. To unpair, the user removes the peer on their device; slice 5.4's forget/rediscover heuristics surface "this peer seems to have forgotten you" so trust stays bilaterally consistent.
-- No forward secrecy on the long-term per-pair PSK. The per-transfer key is fresh (HKDF over the PSK plus a random transferId), so compromise of one transfer does not compromise others.
+- No forward secrecy on the long-term per-pair PSK. The per-transfer key is fresh (HKDF with the PSK as keying material and a random transferId as the salt), so compromise of one transfer does not compromise others.
 - No "auto-accept invites on trusted networks" toggle, ever. This would collapse the model — any device on the LAN could pair silently.
 - No `/pair-invite` outside trusted networks. Even paired peers cannot issue invites on a network neither side trusts.
