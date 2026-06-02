@@ -727,6 +727,15 @@ class PairInviteService {
       _pending.remove(inviteId);
       await _mailbox?.remove(inviteId);
       _invites.add(_toInvite(p, PairInviteStatus.declined));
+      // Audit #33: deliberately do NOT arm `_declinedAt` here. The decline
+      // cooldown is a local-user anti-annoyance guard (see the
+      // `_defaultDeclineCooldown` doc + `markLocalDeclined`): it suppresses
+      // *inbound* invites from a peer the local user explicitly rejected.
+      // A peer-initiated decline means the *remote* user backed out (e.g.
+      // their fingerprint screen didn't match, or a misclick) — the local
+      // user never rejected anyone. Arming a cooldown on the peer here would
+      // 429 their immediate "oops, retry" invite, which is worse UX than the
+      // local-only behaviour. The asymmetry is intentional.
       _log('recordRemoteFinalize: peer declined id=$inviteId');
       return PairFinalizeRecorded();
     }
