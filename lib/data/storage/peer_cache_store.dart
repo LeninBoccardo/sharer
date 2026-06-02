@@ -8,6 +8,15 @@ import '../../domain/repositories/peer_cache_repository.dart';
 class PeerCacheStore implements PeerCacheRepository {
   static const _key = 'peers.cache.v1';
 
+  /// Audit #38: bound the cache so it can't grow without limit (every
+  /// HMAC-verified inbound can mint an entry) and so genuinely stale
+  /// addresses get evicted. Entries last seen longer ago than this are
+  /// pruned on hydration; the survivors are trimmed to [_maxEntries] by
+  /// recency. Generous enough that a peer you pair with and use
+  /// occasionally stays cached, tight enough that abandoned IPs go away.
+  static const Duration _maxAge = Duration(days: 30);
+  static const int _maxEntries = 50;
+
   final SharedPreferences _prefs;
 
   /// In-memory snapshot of the cache, lazily hydrated from
@@ -31,9 +40,31 @@ class PeerCacheStore implements PeerCacheRepository {
       return _cache = <Peer>[];
     }
     final decoded = jsonDecode(raw) as List<dynamic>;
-    return _cache = decoded
+    final list = decoded
         .map((e) => _fromJson(e as Map<String, dynamic>))
         .toList();
+    final removed = _pruneStale(list, DateTime.now());
+    _cache = list;
+    // Only burn a disk write when the prune actually dropped something —
+    // matches cacheAddress's "write only when state callers care about
+    // changed" policy and keeps the common read-only hydration cheap.
+    if (removed) await _persist();
+    return list;
+  }
+
+  /// Audit #38: drop entries last seen longer ago than [_maxAge], then
+  /// trim to the [_maxEntries] most-recently-seen. Mutates [list] in
+  /// place. Returns true when anything was removed so callers can decide
+  /// whether to flush. [now] is injected for testability.
+  bool _pruneStale(List<Peer> list, DateTime now) {
+    final before = list.length;
+    final cutoff = now.subtract(_maxAge);
+    list.removeWhere((p) => p.lastSeen.isBefore(cutoff));
+    if (list.length > _maxEntries) {
+      list.sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+      list.removeRange(_maxEntries, list.length);
+    }
+    return list.length != before;
   }
 
   Future<void> _persist() async {
@@ -119,10 +150,23 @@ class PeerCacheStore implements PeerCacheRepository {
   }
 
   @override
-  Future<Peer?> getById(String deviceId) async {
+  Future<Peer?> getById(
+    String deviceId, {
+    Duration? freshFor,
+    DateTime? now,
+  }) async {
     final list = await _ensureLoaded();
     for (final p in list) {
-      if (p.id == deviceId) return p;
+      if (p.id != deviceId) continue;
+      // Audit #38: when the caller asks for a fresh address, refuse to
+      // hand back an entry older than freshFor so the send path falls
+      // back to the live mDNS-resolved peer.host instead of dialing a
+      // long-stale cached IP.
+      if (freshFor != null) {
+        final cutoff = (now ?? DateTime.now()).subtract(freshFor);
+        if (p.lastSeen.isBefore(cutoff)) return null;
+      }
+      return p;
     }
     return null;
   }

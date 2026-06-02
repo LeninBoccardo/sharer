@@ -37,5 +37,15 @@ abstract class PeerCacheRepository {
   /// entry exists. The returned [Peer] may be missing fields beyond
   /// host/port (e.g. lastSeen will be the moment the address was
   /// cached, not a real discovery timestamp).
-  Future<Peer?> getById(String deviceId);
+  ///
+  /// Audit #38: pass [freshFor] to make the lookup also return null when
+  /// the entry's `lastSeen` is older than `now - freshFor`. The send path
+  /// uses this so a long-stale cached IP no longer wins over a freshly
+  /// mDNS-resolved address. [now] is injectable for tests; production
+  /// callers leave it null and the implementation uses the wall clock.
+  Future<Peer?> getById(
+    String deviceId, {
+    Duration? freshFor,
+    DateTime? now,
+  });
 }

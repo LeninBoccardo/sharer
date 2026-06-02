@@ -18,6 +18,7 @@ void main() {
     String? host = '192.168.1.42',
     int? port = 8080,
     bool isPaired = true,
+    DateTime? lastSeen,
   }) =>
       Peer(
         id: id,
@@ -25,7 +26,7 @@ void main() {
         host: host,
         port: port,
         isPaired: isPaired,
-        lastSeen: DateTime.utc(2026, 5, 3, 12),
+        lastSeen: lastSeen ?? DateTime.utc(2026, 5, 3, 12),
       );
 
   test('load returns empty when nothing has been saved', () async {
@@ -107,6 +108,76 @@ void main() {
       await cache.upsert(makePeer(id: 'p1'));
       expect((await cache.getById('p1'))?.id, 'p1');
       expect(await cache.getById('not-there'), isNull);
+    });
+  });
+
+  group('audit #38 — freshness + prune', () {
+    test('getById without freshFor returns the entry regardless of age', () async {
+      // Regression guard for the default behaviour forget_service relies on.
+      final twoDaysAgo = DateTime.now().subtract(const Duration(days: 2));
+      await cache.upsert(makePeer(id: 'p1', lastSeen: twoDaysAgo));
+      expect((await cache.getById('p1'))?.id, 'p1');
+    });
+
+    test('getById with freshFor returns the entry when it is recent', () async {
+      final now = DateTime.now();
+      await cache.upsert(makePeer(id: 'p1', lastSeen: now));
+      final got = await cache.getById('p1',
+          freshFor: const Duration(hours: 12), now: now);
+      expect(got?.host, isNotNull);
+    });
+
+    test('getById with freshFor returns null when the entry is stale', () async {
+      final now = DateTime.now();
+      await cache.upsert(
+          makePeer(id: 'p1', lastSeen: now.subtract(const Duration(days: 2))));
+      final got = await cache.getById('p1',
+          freshFor: const Duration(hours: 12), now: now);
+      expect(got, isNull);
+    });
+
+    test('prunes entries older than _maxAge on hydration and persists',
+        () async {
+      final now = DateTime.now();
+      final stale =
+          makePeer(id: 'old', lastSeen: now.subtract(const Duration(days: 40)));
+      final recent =
+          makePeer(id: 'new', lastSeen: now.subtract(const Duration(days: 1)));
+      // save() does not prune; it just persists.
+      await cache.save([stale, recent]);
+
+      // A fresh store hydrating from the same prefs prunes the 40-day entry.
+      final prefs = await SharedPreferences.getInstance();
+      final store2 = PeerCacheStore(prefs);
+      final loaded = await store2.load();
+      expect(loaded.map((p) => p.id), ['new']);
+
+      // The prune was persisted: a third store sees only the survivor.
+      final store3 = PeerCacheStore(prefs);
+      expect((await store3.load()).map((p) => p.id), ['new']);
+    });
+
+    test('trims to the 50 most-recently-seen on hydration', () async {
+      final now = DateTime.now();
+      // lastSeen increases with i (p59 most recent), all within _maxAge.
+      final many = List.generate(
+        60,
+        (i) => makePeer(
+            id: 'p$i', lastSeen: now.subtract(Duration(minutes: 60 - i))),
+      );
+      await cache.save(many);
+
+      final prefs = await SharedPreferences.getInstance();
+      final store2 = PeerCacheStore(prefs);
+      final loaded = await store2.load();
+      expect(loaded, hasLength(50));
+
+      final ids = loaded.map((p) => p.id).toSet();
+      // The 10 oldest (p0..p9) were dropped; the 50 most-recent survive.
+      expect(ids.contains('p59'), isTrue);
+      expect(ids.contains('p10'), isTrue);
+      expect(ids.contains('p9'), isFalse);
+      expect(ids.contains('p0'), isFalse);
     });
   });
 }

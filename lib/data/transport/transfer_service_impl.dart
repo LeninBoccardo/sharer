@@ -26,6 +26,12 @@ class TransferServiceImpl implements TransferService {
   static const _logName = 'sharer.transport.service';
   static const _maxKeptTerminal = 50;
 
+  /// Audit #38: only prefer a cached peer address over the live
+  /// mDNS-resolved peer.host while the cached entry is reasonably fresh.
+  /// Past this, a DHCP lease change / subnet move makes the cached IP
+  /// more likely wrong than right, so we trust fresh discovery instead.
+  static const _cachedAddressFreshFor = Duration(hours: 12);
+
   final HttpFileClient _client;
   final HttpFileServer _server;
   final DeviceIdentityRepository _identityRepo;
@@ -123,7 +129,8 @@ class TransferServiceImpl implements TransferService {
     String host = peer.host!;
     int port = peer.port!;
     if (_peerCache != null) {
-      final cached = await _peerCache.getById(peer.id);
+      final cached =
+          await _peerCache.getById(peer.id, freshFor: _cachedAddressFreshFor);
       if (cached?.host != null && cached?.port != null) {
         host = cached!.host!;
         port = cached.port!;
