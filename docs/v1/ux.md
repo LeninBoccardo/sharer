@@ -45,7 +45,7 @@ What's persistent and what isn't, per platform:
 
 | Platform | Idle ambient indicator | Transfer-time notification | Notes |
 | --- | --- | --- | --- |
-| Android | One collapsed line in the notification shade (channel `service_idle`, `IMPORTANCE_MIN`) — only present while paired count > 0 | Heads-up + progress on `transfer_active` (`IMPORTANCE_LOW`); idle notification cancelled while transfer runs | OS forces *some* notification while the FG service runs. We minimise it; the user can long-press → channel settings → mute the channel entirely if they prefer (then it's invisible but still surfacing transfers). |
+| Android | One collapsed line in the notification shade (channel `service_idle`, `IMPORTANCE_MIN`) — only present while paired count > 0 | Heads-up + progress on `transfer_active` (`IMPORTANCE_LOW`); the idle line stays (an FG-service notification can't be cancelled while the service runs) but is silent/collapsed, so the transfer notification is the one the user sees | OS forces *some* notification while the FG service runs. We minimise it; the user can long-press → channel settings → mute the channel entirely if they prefer (then it's invisible but still surfacing transfers). |
 | Windows | Tray icon (overflowable) | Toast on start + completion | Closing the window hides to tray. Only Quit from the tray menu exits. |
 | iOS | None (foreground-only per [OQ-9](open-questions.md)) | Foreground only | App must be open; documented limitation. |
 
