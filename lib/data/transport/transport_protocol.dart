@@ -6,6 +6,13 @@
 /// streamed octet-stream — no in-memory buffering of file content.
 abstract final class TransportProtocol {
   static const int defaultPort = 8080;
+
+  /// The single transfer route. v1 is **push-only**: bytes always move
+  /// via a `POST` here. A `GET /files/:id` *pull* endpoint from the
+  /// original protocol sketch is intentionally NOT implemented in v1 —
+  /// no v1 surface initiates a pull, so it would be an unused route.
+  /// Deferred to v2. See docs/v1/architecture.md
+  /// "Pull endpoint (GET /files/:id) — deferred to v2".
   static const String uploadPath = '/upload';
 
   /// One-time pairing-completion endpoint (slice 4.3). The initiator's

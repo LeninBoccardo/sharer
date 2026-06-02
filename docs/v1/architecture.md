@@ -65,6 +65,10 @@ These are enforced by the test suite at [`test/data/transport/http_file_server_t
 6. **Per-pair PSK, never shared across pairs.** Each `PairedDevice` carries its own 32-byte PSK derived independently. Compromise of one pair never exposes another.
 7. **Per-transfer key, derived not transmitted.** End-to-end chunk encryption (slice 5.3) derives `transferKey = HKDF-SHA256(IKM=PSK, salt=transferId)` per upload (transferId is the HKDF salt, not concatenated into the IKM). The PSK never encrypts bytes directly; the transferKey lifetime is one transfer.
 
+### Pull endpoint (`GET /files/:id`) — deferred to v2
+
+The original protocol sketch ([CLAUDE.md](../../CLAUDE.md), [APP_INITIAL_DOCS.md](../../APP_INITIAL_DOCS.md)) listed a `GET /files/:id` *pull* endpoint alongside `POST /upload`. **v1 is push-only.** The entire UX is "pick a peer → send"; no v1 surface ever initiates a pull, so a pull endpoint would be authenticated server + client code with zero callers — exactly the premature abstraction the [code conventions](../../CLAUDE.md) forbid until there is a second real caller. It is therefore **intentionally not implemented in v1 and deferred to v2**, where a "request a file from a peer" flow (or the cross-network relay, slice 6.x) would give it a genuine caller and a UX to drive it. Until then `/upload` (push) is the only transfer route.
+
 ## Hot path: share flow
 
 This is the path that defines the app's perceived speed. Every step counts.
