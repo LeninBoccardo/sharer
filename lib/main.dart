@@ -71,34 +71,56 @@ Future<void> main() async {
     // already-running stream.
     container.read(peerDiscoveryProvider);
 
-    // Slice 5.2.1: pre-init notifications + warm up the coordinator
-    // before the first frame so an inbound transfer/invite that lands in
-    // the same second the app boots already has a listener attached.
-    await container.read(notificationServiceProvider).init();
-    // requestPermission is fire-and-forget — Android 13+ shows the
-    // system dialog asynchronously. We don't gate boot on the answer.
-    unawaited(container.read(notificationServiceProvider).requestPermission());
-    // Reading the coordinator provider is what starts its listeners.
-    container.read(notificationCoordinatorProvider);
-    // Slice 5.2.2: same pattern — reading the FG-service controller
-    // wires it to the paired-devices stream. If the user already has a
-    // pair persisted, the first stream emission will fire startService
-    // without UI involvement.
+    // Slice 5.2.2: reading the FG-service controller wires it to the
+    // paired-devices stream. If the user already has a pair persisted,
+    // the first stream emission will fire startService without UI
+    // involvement. Synchronous (no await) and independent of
+    // notification init, so it stays on the pre-first-frame path.
     container.read(foregroundServiceControllerProvider);
     // Slice 5.2.3: install the Windows tray icon + flip the
     // close-to-tray prevent flag before the first frame paints.
     // Controller is platform-gated so this is a no-op on non-Windows.
+    // Must stay pre-frame: the prevent-close flag has to be set before
+    // the window can be closed.
     container.read(windowsTrayControllerProvider);
-    // Slice 5.2.4: subscribes to the foreground notification-response
-    // stream + queries `getNotificationAppLaunchDetails()` once for
-    // cold-start routing. Must come after the service init above so
-    // the stream is wired before the launch-details read.
-    container.read(notificationRouterProvider);
     // Slice 5.5: subscribes the share-sheet bridge to ACTION_SEND
     // intents and consumes the cold-start share (if the app was
     // launched from the share sheet). Reading the provider runs
     // controller.start(); on non-Android platforms this is a no-op.
+    // Synchronous and independent of notification init — kept pre-frame
+    // so the cold-start share is captured before the home screen renders.
     container.read(pendingSharesControllerProvider);
+
+    // Audit #46: do NOT block the first frame on notification init.
+    // NotificationService.init() is a platform-plugin round-trip
+    // (Android channel registration / Windows WinRT toast registration)
+    // and Principle #1 makes cold-start latency part of the share-path
+    // budget. Defer the whole init-dependent chain to a post-first-frame
+    // callback so the UI paints first; the callback fires ~one frame
+    // later, so the "listener attached in the same second the app boots"
+    // intent from slice 5.2.1 still holds for any inbound
+    // transfer/invite. Ordering inside the callback is load-bearing:
+    // init() must COMPLETE before the router is read, because
+    // NotificationRouter.start() calls readLaunchDetails() ->
+    // getNotificationAppLaunchDetails(), which needs the plugin
+    // initialized.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Slice 5.2.1: pre-init notifications + warm up the coordinator so
+      // an inbound transfer/invite already has a listener attached.
+      await container.read(notificationServiceProvider).init();
+      // requestPermission is fire-and-forget — Android 13+ shows the
+      // system dialog asynchronously. We don't gate on the answer.
+      unawaited(
+        container.read(notificationServiceProvider).requestPermission(),
+      );
+      // Reading the coordinator provider is what starts its listeners.
+      container.read(notificationCoordinatorProvider);
+      // Slice 5.2.4: subscribes to the foreground notification-response
+      // stream + queries `getNotificationAppLaunchDetails()` once for
+      // cold-start routing. Must come after the service init above so
+      // the plugin is initialized before the launch-details read.
+      container.read(notificationRouterProvider);
+    });
   }
 
   runApp(
