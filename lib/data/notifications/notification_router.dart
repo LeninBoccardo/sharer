@@ -45,15 +45,18 @@ class NotificationRouter {
     required InviteController inviteController,
     required OpenFileFn openFile,
     required ShowMainWindowFn showMainWindow,
+    DateTime Function()? now,
   })  : _service = service,
         _inviteController = inviteController,
         _openFile = openFile,
-        _showMainWindow = showMainWindow;
+        _showMainWindow = showMainWindow,
+        _now = now ?? DateTime.now;
 
   final NotificationService _service;
   final InviteController _inviteController;
   final OpenFileFn _openFile;
   final ShowMainWindowFn _showMainWindow;
+  final DateTime Function() _now;
   StreamSubscription<NotificationResponse>? _sub;
 
   /// Slice 5.x.3.8: cold-start dedup. Some Android OEMs re-deliver
@@ -64,8 +67,25 @@ class NotificationRouter {
   /// (actionId, payload) and skip the first matching response that
   /// arrives via the foreground stream, then clear the latch so a
   /// legitimate re-tap of the same notification still routes.
+  ///
+  /// Audit #39: the OEM re-fire only ever arrives on a minority of
+  /// devices. On every other platform (Windows toasts, vanilla
+  /// Android) it never fires, so a match-only clear would leave the
+  /// latch armed for the whole session and silently swallow a later,
+  /// genuine re-tap of the same notification. We therefore bound the
+  /// latch to [_coldStartDedupWindow] anchored at [_launchHandledAt]:
+  /// the re-fire is near-instant once the engine is up, so the window
+  /// catches it, while any tap after the window routes normally.
   String? _launchActionId;
   String? _launchPayload;
+  DateTime? _launchHandledAt;
+
+  /// How long after the cold-start launch a matching foreground
+  /// response is treated as the OEM duplicate re-fire rather than a
+  /// fresh user tap. The re-fire arrives within a frame or two of the
+  /// engine coming up; a few seconds is a generous upper bound that
+  /// still clears well before a human could deliberately re-tap.
+  static const _coldStartDedupWindow = Duration(seconds: 5);
 
   Future<void> start() async {
     // Audit #18: attach the foreground responses listener BEFORE the
@@ -85,6 +105,7 @@ class NotificationRouter {
     final launch = await _service.readLaunchDetails();
     _launchActionId = launch?.actionId;
     _launchPayload = launch?.payload;
+    _launchHandledAt = launch != null ? _now() : null;
     if (launch != null) {
       await _route(actionId: launch.actionId, payload: launch.payload);
       _log('handled cold-start launch');
@@ -99,11 +120,23 @@ class NotificationRouter {
 
   void _handleResponse(NotificationResponse response) {
     // Cold-start dedup latch — see _launchActionId field comment.
-    if (_launchActionId != null &&
+    // Audit #39: only suppress the re-fire while it's still inside the
+    // dedup window. Once the window lapses (the common case where no
+    // OEM re-fire ever arrives), disarm the latch and fall through so a
+    // later genuine re-tap of the same notification still routes.
+    final handledAt = _launchHandledAt;
+    final withinWindow = handledAt != null &&
+        _now().difference(handledAt) <= _coldStartDedupWindow;
+    if (!withinWindow) {
+      _launchActionId = null;
+      _launchPayload = null;
+      _launchHandledAt = null;
+    } else if (_launchActionId != null &&
         response.actionId == _launchActionId &&
         response.payload == _launchPayload) {
       _launchActionId = null;
       _launchPayload = null;
+      _launchHandledAt = null;
       _log('skip duplicate launch tap (foreground re-fire after cold-start)');
       return;
     }

@@ -427,5 +427,42 @@ void main() {
       expect(openedPaths, ['/dl/IMG.jpg', '/dl/IMG.jpg'],
           reason: 'second tap after dedup latch cleared should route');
     });
+
+    test('audit #39: a legit re-tap after the dedup window still routes '
+        'when no OEM re-fire ever arrived', () async {
+      await router.dispose();
+      service.coldStartLaunch = const NotificationLaunch(
+        payload: 'transfer_done:abc|/dl/IMG.jpg',
+        actionId: NotificationActions.transferOpen,
+      );
+      var now = DateTime.utc(2026, 6, 1, 12);
+      router = NotificationRouter(
+        service: service,
+        inviteController: inviteController,
+        openFile: (path) async => openedPaths.add(path),
+        showMainWindow: () async {
+          showWindowCount++;
+        },
+        now: () => now,
+      );
+      await router.start();
+      await pumpEventQueue();
+      expect(openedPaths, ['/dl/IMG.jpg']);
+
+      // No OEM re-fire arrives; the dedup window lapses.
+      now = now.add(const Duration(seconds: 6));
+
+      // The user genuinely re-taps the same notification later.
+      service.emit(const NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: NotificationActions.transferOpen,
+        payload: 'transfer_done:abc|/dl/IMG.jpg',
+      ));
+      await pumpEventQueue();
+      expect(openedPaths, ['/dl/IMG.jpg', '/dl/IMG.jpg'],
+          reason: 'a legit re-tap after the dedup window must not be swallowed '
+              'when no OEM re-fire arrived (pre-fix the latch stayed armed)');
+    });
   });
 }
