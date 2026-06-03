@@ -165,6 +165,15 @@ dependencies:
   # 3.x API shift is a one-file change.
   screen_brightness: ^2.1.9
 
+  # Phase 5: desktop drag-and-drop — drop a file onto a paired peer tile
+  # (Windows/macOS/Linux) to start a streamed send. win32-SAFE: 0.7.1 depends
+  # only on {cross_file, web, universal_platform} — none pull win32, so the
+  # file_picker 11.x win32 ^5 pin is untouched. Platform plugins auto-register
+  # via GeneratedPluginRegistrant (no manual native edits). Never built on
+  # mobile/web (gated by isDesktopDropSupported in
+  # presentation/home/dropped_file_sender.dart).
+  desktop_drop: ^0.7.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

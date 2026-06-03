@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -16,6 +17,7 @@ import '../share/share_pending_banner.dart';
 import '../transfers/transfer_screen.dart';
 import '../transfers/transfers_section.dart';
 import 'battery_optimization_banner.dart';
+import 'dropped_file_sender.dart';
 import 'interrupted_pairing_banner.dart';
 import 'peer_send_coordinator.dart';
 import 'quiet_mode_banner.dart';
@@ -443,6 +445,88 @@ class _PeerList extends ConsumerWidget {
   }
 }
 
+/// Desktop drag-and-drop wrapper for a single paired peer tile. Built ONLY
+/// when [isDesktopDropSupported] (Windows/macOS/Linux), so the DropTarget +
+/// desktop_drop are never in the mobile/web tree. Dropping one or more files
+/// streams a [FilePayload] per file from disk and sends to [peer] via the same
+/// transferServiceProvider.send path as a tap (zero extra taps), then pushes
+/// the scoped TransferScreen. Hover state is local to this widget's State so it
+/// never lifts a rebuild to the peer list (preserves audit #43).
+class _PeerDropTarget extends ConsumerStatefulWidget {
+  const _PeerDropTarget({required this.peer, required this.child});
+
+  final Peer peer;
+  final Widget child;
+
+  @override
+  ConsumerState<_PeerDropTarget> createState() => _PeerDropTargetState();
+}
+
+class _PeerDropTargetState extends ConsumerState<_PeerDropTarget> {
+  bool _hovering = false;
+
+  Future<void> _onDragDone(DropDoneDetails detail) async {
+    if (mounted) setState(() => _hovering = false);
+    final specs = <DroppedFileSpec>[
+      for (final x in detail.files)
+        DroppedFileSpec(path: x.path, name: x.name, size: await x.length()),
+    ];
+    if (specs.isEmpty) return;
+    final result = await sendDroppedFiles(
+      service: ref.read(transferServiceProvider),
+      peer: widget.peer,
+      files: specs,
+    );
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (result.queued == 0) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('No files could be sent.')),
+      );
+      return;
+    }
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          'Sending ${result.queued} file${result.queued == 1 ? '' : 's'} '
+          '→ ${widget.peer.name}'
+          '${result.skipped > 0 ? ' (${result.skipped} skipped)' : ''}…',
+        ),
+      ),
+    );
+    if (result.started.isEmpty) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TransferScreen(
+          transferIds: result.started,
+          peerName: widget.peer.name,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DropTarget(
+      onDragEntered: (_) => setState(() => _hovering = true),
+      onDragExited: (_) => setState(() => _hovering = false),
+      onDragDone: _onDragDone,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _hovering ? theme.colorScheme.primary : Colors.transparent,
+            width: 2,
+          ),
+        ),
+        child: widget.child,
+      ),
+    );
+  }
+}
+
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader({required this.label});
 
@@ -505,7 +589,7 @@ class _PeerTile extends ConsumerWidget {
     final savedAddress = isPaired
         ? (ref.watch(peerReachableViaCacheProvider(peer.id)).value ?? false)
         : false;
-    return Semantics(
+    final tile = Semantics(
       container: true,
       label: tileSemantics,
       child: Card(
@@ -623,6 +707,17 @@ class _PeerTile extends ConsumerWidget {
         ),
       ),
     );
+
+    // Desktop only: arm drag-and-drop send on a paired + reachable tile (and
+    // not while multi-selecting). On mobile/web isDesktopDropSupported is false
+    // so the tile is byte-identical to before — no DropTarget in the tree, so
+    // desktop_drop is never referenced there.
+    final canDrop = isDesktopDropSupported &&
+        isPaired &&
+        peer.isReachable &&
+        !selectionMode;
+    if (!canDrop) return tile;
+    return _PeerDropTarget(peer: peer, child: tile);
   }
 
   Future<void> _onTap(
