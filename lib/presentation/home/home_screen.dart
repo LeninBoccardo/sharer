@@ -1,18 +1,11 @@
 import 'dart:async';
-import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mime/mime.dart';
 
 import '../../app/providers.dart';
-import '../../data/share/incoming_share_service.dart';
-import '../../domain/entities/file_payload.dart';
 import '../../domain/entities/pair_invite.dart';
 import '../../domain/entities/peer.dart';
-import '../../domain/entities/transfer.dart';
-import '../../domain/repositories/transfer_service.dart';
 import '../diagnostics/diagnostics_screen.dart';
 import '../pairing/devices_screen.dart';
 import '../../data/security/invite_controller.dart';
@@ -24,6 +17,7 @@ import '../transfers/transfer_screen.dart';
 import '../transfers/transfers_section.dart';
 import 'battery_optimization_banner.dart';
 import 'interrupted_pairing_banner.dart';
+import 'peer_send_coordinator.dart';
 import 'quiet_mode_banner.dart';
 import 'web_native_app_banner.dart';
 
@@ -72,6 +66,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
+  // ----- Multi-peer selection (ephemeral UI state; single owner, so no
+  // provider — long-press a paired tile to enter, tap tiles to toggle). -----
+  final _selectedPeerIds = <String>{};
+  bool get _selectionMode => _selectedPeerIds.isNotEmpty;
+
+  void _enterSelection(String id) => setState(() => _selectedPeerIds.add(id));
+
+  void _toggleSelect(String id) => setState(() {
+    if (!_selectedPeerIds.remove(id)) _selectedPeerIds.add(id);
+  });
+
+  void _clearSelection() {
+    if (_selectedPeerIds.isEmpty) return;
+    setState(_selectedPeerIds.clear);
+  }
+
+  Future<void> _sendToSelected(List<Peer> allPeers) async {
+    final selected = [
+      for (final p in allPeers)
+        if (_selectedPeerIds.contains(p.id) && p.isReachable) p,
+    ];
+    if (selected.isEmpty) return;
+    final ids = await PeerSendCoordinator(ref).sendToPeers(context, selected);
+    if (!mounted) return;
+    _clearSelection();
+    if (ids.isEmpty) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TransferScreen(
+          transferIds: ids,
+          peerName:
+              '${selected.length} device${selected.length == 1 ? '' : 's'}',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final peersAsync = ref.watch(peersStreamProvider);
@@ -114,65 +145,121 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _maybeBurstForPending(next.value);
     });
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Sharer'),
-        centerTitle: false,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.devices),
-            tooltip: 'Paired devices',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const DevicesScreen(),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.tune),
-            tooltip: 'You & networks',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const DiagnosticsScreen(),
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        // Single scrollable column: peer area and transfers compete for
-        // height inside an Expanded otherwise (caused a 7.7px overflow on
-        // small screens once the Transfers section started rendering).
-        // Now growth in either pushes content down rather than getting
-        // squeezed.
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const WebNativeAppBanner(),
-              const QuietModeBanner(),
-              const BatteryOptimizationBanner(),
-              const InterruptedPairingBanner(),
-              const SharePendingBanner(),
-              Text('Nearby devices', style: theme.textTheme.titleLarge),
-              const SizedBox(height: 12),
-              peersAsync.when(
-                loading: () => const SizedBox(
-                  height: 120,
-                  child: Center(child: CircularProgressIndicator()),
+    final allPeers = peersAsync.value ?? const <Peer>[];
+    final hasSelectableReachable = allPeers.any(
+      (p) => _selectedPeerIds.contains(p.id) && p.isReachable,
+    );
+
+    return PopScope(
+      // In selection mode, Android back exits selection first.
+      canPop: !_selectionMode,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _clearSelection();
+      },
+      child: Scaffold(
+        appBar: _selectionMode
+            ? AppBar(
+                leading: IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Cancel selection',
+                  onPressed: _clearSelection,
                 ),
-                error: (e, _) => SizedBox(
-                  height: 120,
-                  child: Center(child: Text('Error: $e')),
-                ),
-                data: (peers) =>
-                    peers.isEmpty ? const _EmptyState() : _PeerList(peers: peers),
+                title: Text('${_selectedPeerIds.length} selected'),
+              )
+            : AppBar(
+                title: const Text('Sharer'),
+                centerTitle: false,
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.devices),
+                    tooltip: 'Paired devices',
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const DevicesScreen(),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.tune),
+                    tooltip: 'You & networks',
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const DiagnosticsScreen(),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              const TransfersSection(),
-            ],
+        body: SafeArea(
+          // Single scrollable column: peer area and transfers compete for
+          // height inside an Expanded otherwise (caused a 7.7px overflow on
+          // small screens once the Transfers section started rendering).
+          // Now growth in either pushes content down rather than getting
+          // squeezed.
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const WebNativeAppBanner(),
+                const QuietModeBanner(),
+                const BatteryOptimizationBanner(),
+                const InterruptedPairingBanner(),
+                const SharePendingBanner(),
+                Text('Nearby devices', style: theme.textTheme.titleLarge),
+                const SizedBox(height: 12),
+                peersAsync.when(
+                  loading: () => const SizedBox(
+                    height: 120,
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                  error: (e, _) => SizedBox(
+                    height: 120,
+                    child: Center(child: Text('Error: $e')),
+                  ),
+                  data: (peers) => peers.isEmpty
+                      ? const _EmptyState()
+                      : _PeerList(
+                          peers: peers,
+                          selectionMode: _selectionMode,
+                          selectedIds: _selectedPeerIds,
+                          onLongPressPaired: _enterSelection,
+                          onToggle: _toggleSelect,
+                        ),
+                ),
+                const TransfersSection(),
+              ],
+            ),
           ),
         ),
+        bottomNavigationBar: _selectionMode
+            ? SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _clearSelection,
+                          child: const Text('Cancel'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        flex: 2,
+                        child: FilledButton.icon(
+                          icon: const Icon(Icons.send),
+                          label: Text('Send to ${_selectedPeerIds.length}'),
+                          onPressed: hasSelectableReachable
+                              ? () => _sendToSelected(allPeers)
+                              : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : null,
       ),
     );
   }
@@ -227,8 +314,9 @@ class _EmptyStateState extends ConsumerState<_EmptyState> {
           const SizedBox(height: 8),
           Text(
             'Devices on the same Wi-Fi running Sharer will appear here.',
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: theme.colorScheme.outline),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.outline,
+            ),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
@@ -250,9 +338,19 @@ class _EmptyStateState extends ConsumerState<_EmptyState> {
 }
 
 class _PeerList extends ConsumerWidget {
-  const _PeerList({required this.peers});
+  const _PeerList({
+    required this.peers,
+    this.selectionMode = false,
+    this.selectedIds = const {},
+    this.onLongPressPaired,
+    this.onToggle,
+  });
 
   final List<Peer> peers;
+  final bool selectionMode;
+  final Set<String> selectedIds;
+  final void Function(String)? onLongPressPaired;
+  final void Function(String)? onToggle;
 
   /// Stable, value-equal signature of how [peers] partitions by paired
   /// membership. Watched via `.select` so the list re-partitions only when
@@ -261,7 +359,7 @@ class _PeerList extends ConsumerWidget {
   String _partitionKey(Set<String> pairedIds) {
     final paired = [
       for (final p in peers)
-        if (pairedIds.contains(p.id)) p.id
+        if (pairedIds.contains(p.id)) p.id,
     ]..sort();
     return paired.join(',');
   }
@@ -277,17 +375,28 @@ class _PeerList extends ConsumerWidget {
     // identity-equal Set on every paired-devices emit).
     ref.watch(pairedDeviceIdsProvider.select(_partitionKey));
     final pairedIds = ref.read(pairedDeviceIdsProvider);
-    final paired = [for (final p in peers) if (pairedIds.contains(p.id)) p];
-    final nearby = [for (final p in peers) if (!pairedIds.contains(p.id)) p];
+    final paired = [
+      for (final p in peers)
+        if (pairedIds.contains(p.id)) p,
+    ];
+    final nearby = [
+      for (final p in peers)
+        if (!pairedIds.contains(p.id)) p,
+    ];
 
     // Favorited paired peers lead the Paired section. Watch only a signature
     // of the favorites among the *visible paired* peers, so a favorite toggle
     // re-sorts exactly once and an unrelated toggle doesn't rebuild the list
     // (audit #43). Partition-concat (not List.sort, which is unstable) keeps
     // discovery order within each group.
-    ref.watch(favoriteDeviceIdsProvider.select((favs) =>
-        ([for (final p in paired) if (favs.contains(p.id)) p.id]..sort())
-            .join(',')));
+    ref.watch(
+      favoriteDeviceIdsProvider.select(
+        (favs) => ([
+          for (final p in paired)
+            if (favs.contains(p.id)) p.id,
+        ]..sort()).join(','),
+      ),
+    );
     final favs = ref.read(favoriteDeviceIdsProvider);
     final orderedPaired = [
       for (final p in paired)
@@ -305,7 +414,14 @@ class _PeerList extends ConsumerWidget {
           const _SectionHeader(label: 'Paired'),
           for (var i = 0; i < orderedPaired.length; i++) ...[
             if (i > 0) const SizedBox(height: 8),
-            _PeerTile(peer: orderedPaired[i]),
+            _PeerTile(
+              peer: orderedPaired[i],
+              selectionMode: selectionMode,
+              isSelected: selectedIds.contains(orderedPaired[i].id),
+              selectable: true,
+              onLongPressSelect: onLongPressPaired,
+              onToggleSelect: onToggle,
+            ),
           ],
         ],
         if (paired.isNotEmpty && nearby.isNotEmpty) const SizedBox(height: 16),
@@ -313,7 +429,13 @@ class _PeerList extends ConsumerWidget {
           const _SectionHeader(label: 'Nearby (not paired)'),
           for (var i = 0; i < nearby.length; i++) ...[
             if (i > 0) const SizedBox(height: 8),
-            _PeerTile(peer: nearby[i]),
+            _PeerTile(
+              peer: nearby[i],
+              selectionMode: selectionMode,
+              selectable: false,
+              onLongPressSelect: onLongPressPaired,
+              onToggleSelect: onToggle,
+            ),
           ],
         ],
       ],
@@ -333,17 +455,30 @@ class _SectionHeader extends StatelessWidget {
       padding: const EdgeInsets.only(left: 4, bottom: 8),
       child: Text(
         label,
-        style: theme.textTheme.labelLarge
-            ?.copyWith(color: theme.colorScheme.outline),
+        style: theme.textTheme.labelLarge?.copyWith(
+          color: theme.colorScheme.outline,
+        ),
       ),
     );
   }
 }
 
 class _PeerTile extends ConsumerWidget {
-  const _PeerTile({required this.peer});
+  const _PeerTile({
+    required this.peer,
+    this.selectionMode = false,
+    this.isSelected = false,
+    this.selectable = false,
+    this.onLongPressSelect,
+    this.onToggleSelect,
+  });
 
   final Peer peer;
+  final bool selectionMode;
+  final bool isSelected;
+  final bool selectable;
+  final void Function(String)? onLongPressSelect;
+  final void Function(String)? onToggleSelect;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -351,8 +486,9 @@ class _PeerTile extends ConsumerWidget {
     // Audit #43: select the per-peer bool so this tile only rebuilds when
     // *its own* paired status flips — not on every paired-devices emit
     // (pairedDeviceIdsProvider hands back a fresh, identity-equal Set).
-    final isPaired = ref
-        .watch(pairedDeviceIdsProvider.select((ids) => ids.contains(peer.id)));
+    final isPaired = ref.watch(
+      pairedDeviceIdsProvider.select((ids) => ids.contains(peer.id)),
+    );
     // a11y: announce the tile as one coherent node so paired/reachable state
     // is never conveyed by color/icon alone. excludeSemantics is NOT set, so
     // the ListTile's own "tap to send" button semantics still merge in.
@@ -363,7 +499,8 @@ class _PeerTile extends ConsumerWidget {
     // family key) so they never widen the list rebuild (audit #43).
     final isFav = isPaired
         ? ref.watch(
-            favoriteDeviceIdsProvider.select((ids) => ids.contains(peer.id)))
+            favoriteDeviceIdsProvider.select((ids) => ids.contains(peer.id)),
+          )
         : false;
     final savedAddress = isPaired
         ? (ref.watch(peerReachableViaCacheProvider(peer.id)).value ?? false)
@@ -373,12 +510,16 @@ class _PeerTile extends ConsumerWidget {
       label: tileSemantics,
       child: Card(
         child: ListTile(
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 8,
+          ),
           leading: CircleAvatar(
             backgroundColor: theme.colorScheme.primaryContainer,
-            child: Icon(Icons.devices,
-                color: theme.colorScheme.onPrimaryContainer),
+            child: Icon(
+              Icons.devices,
+              color: theme.colorScheme.onPrimaryContainer,
+            ),
           ),
           title: Row(
             children: [
@@ -389,14 +530,20 @@ class _PeerTile extends ConsumerWidget {
               if (isPaired)
                 Semantics(
                   label: 'Paired',
-                  child: Icon(Icons.verified_user,
-                      size: 16, color: theme.colorScheme.primary),
+                  child: Icon(
+                    Icons.verified_user,
+                    size: 16,
+                    color: theme.colorScheme.primary,
+                  ),
                 )
               else
                 Semantics(
                   label: 'Not paired',
-                  child: Icon(Icons.lock_open_outlined,
-                      size: 16, color: theme.colorScheme.outline),
+                  child: Icon(
+                    Icons.lock_open_outlined,
+                    size: 16,
+                    color: theme.colorScheme.outline,
+                  ),
                 ),
             ],
           ),
@@ -405,49 +552,73 @@ class _PeerTile extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(peer.isReachable
-                  ? '${peer.host}:${peer.port}'
-                  : 'Resolving…'),
+              Text(
+                peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…',
+              ),
               // "Saved address": we hold a fresh cached IP for this paired
               // peer, so a send will likely connect fast even before mDNS.
               if (savedAddress)
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.bookmark_outline,
-                        size: 14, color: theme.colorScheme.outline),
+                    Icon(
+                      Icons.bookmark_outline,
+                      size: 14,
+                      color: theme.colorScheme.outline,
+                    ),
                     const SizedBox(width: 4),
-                    Text('Saved address',
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: theme.colorScheme.outline)),
+                    Text(
+                      'Saved address',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.outline,
+                      ),
+                    ),
                   ],
                 ),
             ],
           ),
-          trailing: isPaired
-              ? Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // IconButton absorbs its own tap, so toggling the pin does
-                    // NOT bubble to ListTile.onTap (the send path).
-                    IconButton(
-                      icon: Icon(isFav ? Icons.star : Icons.star_border,
-                          size: 20,
-                          color: isFav
-                              ? theme.colorScheme.primary
-                              : theme.colorScheme.outline),
-                      tooltip: isFav ? 'Unpin' : 'Pin to top',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => ref
-                          .read(favoriteDeviceIdsProvider.notifier)
-                          .toggle(peer.id),
-                    ),
-                    const Icon(Icons.send),
-                  ],
+          trailing: (selectionMode && selectable)
+              ? Checkbox(
+                  value: isSelected,
+                  onChanged: peer.isReachable
+                      ? (_) => onToggleSelect?.call(peer.id)
+                      : null,
                 )
-              : const Icon(Icons.send),
-          onTap: peer.isReachable
-              ? () => _onTap(context, ref, isPaired: isPaired)
+              : (isPaired
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // IconButton absorbs its own tap, so toggling the pin
+                          // does NOT bubble to ListTile.onTap (the send path).
+                          IconButton(
+                            icon: Icon(
+                              isFav ? Icons.star : Icons.star_border,
+                              size: 20,
+                              color: isFav
+                                  ? theme.colorScheme.primary
+                                  : theme.colorScheme.outline,
+                            ),
+                            tooltip: isFav ? 'Unpin' : 'Pin to top',
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => ref
+                                .read(favoriteDeviceIdsProvider.notifier)
+                                .toggle(peer.id),
+                          ),
+                          const Icon(Icons.send),
+                        ],
+                      )
+                    : const Icon(Icons.send)),
+          selected: selectionMode && isSelected,
+          onTap: selectionMode
+              ? ((selectable && peer.isReachable)
+                    ? () => onToggleSelect?.call(peer.id)
+                    : null)
+              : (peer.isReachable
+                    ? () => _onTap(context, ref, isPaired: isPaired)
+                    : null),
+          // Long-press a paired+reachable tile to enter multi-select mode.
+          onLongPress: (!selectionMode && selectable && peer.isReachable)
+              ? () => onLongPressSelect?.call(peer.id)
               : null,
         ),
       ),
@@ -463,133 +634,18 @@ class _PeerTile extends ConsumerWidget {
       await _showPairFirstSheet(context, ref);
       return;
     }
-    // Slice 5.5: if files arrived via the OS share-sheet, route them
-    // here instead of opening the file picker. Lets the user share
-    // *into* Sharer with a single tap on the destination peer.
-    final pending = ref.read(pendingSharesProvider).value;
-    final Set<String> startedIds;
-    if (pending != null && pending.isNotEmpty) {
-      startedIds = await _sendPending(context, ref, pending.files);
-    } else {
-      startedIds = await _pickAndSend(context, ref);
-    }
-    // The upload(s) are already streaming (send() is fire-and-forget), so
-    // pushing the transfer screen here is decorative — it adds no latency
-    // to the share path. Scoped to just the ids we started.
+    // Delegate the send to the shared coordinator (the multi-peer fan-out
+    // uses it too). send() is fire-and-forget, so pushing the transfer screen
+    // here is decorative — no latency on the share path. Scoped to the ids we
+    // started.
+    final startedIds = await PeerSendCoordinator(ref).sendToPeer(context, peer);
     if (startedIds.isEmpty || !context.mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) =>
-          TransferScreen(transferIds: startedIds, peerName: peer.name),
-    ));
-  }
-
-  /// Returns the ids of the transfers it started (for the transfer screen
-  /// to scope to); empty when nothing was queued.
-  Future<Set<String>> _sendPending(
-    BuildContext context,
-    WidgetRef ref,
-    List<IncomingSharedFile> files,
-  ) async {
-    final transferService = ref.read(transferServiceProvider);
-    final pendingController = ref.read(pendingSharesControllerProvider);
-    var queued = 0;
-    var skipped = 0;
-    final started = <String>{};
-    final deleteImmediately = <String>[];
-    for (final shared in files) {
-      try {
-        final file = File(shared.path);
-        if (!await file.exists()) {
-          // Nothing to drain — safe to drop the (already-missing) path.
-          deleteImmediately.add(shared.path);
-          skipped++;
-          continue;
-        }
-        final payload = FilePayload(
-          fileName: shared.name,
-          sizeBytes: shared.size,
-          bytes: file.openRead(),
-          mimeType: shared.mimeType ?? lookupMimeType(shared.name),
-        );
-        // Audit #5: send() is fire-and-forget and opens file.openRead()
-        // lazily, deep inside the upload after the TLS handshake. We must
-        // NOT delete the cached file until the transfer has drained it,
-        // so defer the delete until this transfer reaches a terminal
-        // status (completed/failed) on watchAll().
-        final transfer = await transferService.send(
-          peer: peer,
-          file: payload,
-          // Phase 4 (retry): the cached share file stays on disk until a
-          // completed/cancelled settle (see _deleteWhenDrained), so a
-          // failed send can re-open it from zero.
-          reopen: () => File(shared.path).openRead(),
-        );
-        started.add(transfer.id);
-        unawaited(_deleteWhenDrained(
-          transferService,
-          pendingController,
-          transfer.id,
-          shared.path,
-        ));
-        queued++;
-      } catch (_) {
-        // Wrapping/queuing failed before the stream was handed off, so
-        // nothing will read the file — drop it now.
-        deleteImmediately.add(shared.path);
-        skipped++;
-      }
-    }
-    // Reset the banner/pending state immediately so the UI flow proceeds,
-    // but leave queued files on disk for their deferred per-transfer
-    // delete. Eagerly reap only files never handed to a transfer.
-    pendingController.clearState();
-    await pendingController.deleteFiles(deleteImmediately);
-    if (!context.mounted) return started;
-    if (queued == 0) {
-      _toast(context, 'Could not send shared files.');
-    } else if (queued == 1 && skipped == 0) {
-      _toast(context, 'Sending ${files.first.name} → ${peer.name}…');
-    } else {
-      _toast(
-        context,
-        'Sending $queued file${queued == 1 ? '' : 's'} → ${peer.name}'
-        '${skipped > 0 ? ' ($skipped skipped)' : ''}…',
-      );
-    }
-    return started;
-  }
-
-  /// Audit #5 + Phase 4 (retry): wait for [transferId] to drain, then
-  /// delete the cached share file. The drain signal is `completed` OR
-  /// `cancelled` — deliberately NOT `failed`: a failed share send keeps its
-  /// cache file so the user can retry from zero (retry re-opens it). A
-  /// permanently-failed-and-never-retried file is reaped by the existing
-  /// 24h stale-cache sweep in PendingSharesController, so the leak window
-  /// is bounded. TransferServiceImpl marks `completed` only after the
-  /// upload stream is drained and `cancelled` only after the upload future
-  /// settles, so no further reads happen past either. Best-effort: if the
-  /// stream closes (app teardown) before then, deleteFiles still runs so we
-  /// don't leak the cache.
-  Future<void> _deleteWhenDrained(
-    TransferService transferService,
-    PendingSharesController pendingController,
-    String transferId,
-    String path,
-  ) async {
-    try {
-      await for (final transfers in transferService.watchAll()) {
-        final t = transfers.where((t) => t.id == transferId).firstOrNull;
-        if (t != null &&
-            (t.status == TransferStatus.completed ||
-                t.status == TransferStatus.cancelled)) {
-          break;
-        }
-      }
-    } catch (_) {
-      // Fall through to delete regardless — a stream error means the
-      // upload is no longer running against the file.
-    }
-    await pendingController.deleteFiles([path]);
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            TransferScreen(transferIds: startedIds, peerName: peer.name),
+      ),
+    );
   }
 
   Future<void> _showPairFirstSheet(BuildContext context, WidgetRef ref) async {
@@ -604,19 +660,25 @@ class _PeerTile extends ConsumerWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Icon(Icons.lock_outline,
-                  size: 40, color: theme.colorScheme.primary),
+              Icon(
+                Icons.lock_outline,
+                size: 40,
+                color: theme.colorScheme.primary,
+              ),
               const SizedBox(height: 12),
-              Text('Pair with ${peer.name} first',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.titleLarge),
+              Text(
+                'Pair with ${peer.name} first',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleLarge,
+              ),
               const SizedBox(height: 8),
               Text(
                 'Devices need to pair once before sharing files. After '
                 'pairing, you can transfer freely on any network.',
                 textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium
-                    ?.copyWith(color: theme.colorScheme.outline),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.outline,
+                ),
               ),
               const SizedBox(height: 20),
               FilledButton.icon(
@@ -710,77 +772,9 @@ class _PeerTile extends ConsumerWidget {
     }
   }
 
-  /// Returns the ids of the transfers it started (for the transfer screen
-  /// to scope to); empty when nothing was queued.
-  Future<Set<String>> _pickAndSend(BuildContext context, WidgetRef ref) async {
-    final FilePickerResult? result;
-    try {
-      result = await FilePicker.pickFiles(
-        withReadStream: true,
-        allowMultiple: true,
-      );
-    } catch (e) {
-      if (!context.mounted) return const <String>{};
-      _toast(context, 'File picker error: $e');
-      return const <String>{};
-    }
-    if (result == null || result.files.isEmpty) return const <String>{};
-
-    final transferService = ref.read(transferServiceProvider);
-    var queued = 0;
-    var skipped = 0;
-    final started = <String>{};
-    for (final picked in result.files) {
-      final stream = picked.readStream;
-      if (stream == null) {
-        skipped++;
-        continue;
-      }
-      final payload = FilePayload(
-        fileName: picked.name,
-        sizeBytes: picked.size,
-        bytes: stream,
-        mimeType: lookupMimeType(picked.name),
-      );
-      // Phase 4 (retry): file_picker usually populates picked.path with a
-      // cached copy (desktop + most Android); when present, a failed send
-      // can be retried by re-opening it. Best-effort — if the copy is gone
-      // at retry time the re-stream just fails again. Web has no path, so
-      // those transfers are non-retryable.
-      final path = picked.path;
-      Stream<List<int>> Function()? reopen;
-      if (path != null) {
-        reopen = () => File(path).openRead();
-      }
-      try {
-        final transfer = await transferService.send(
-          peer: peer,
-          file: payload,
-          reopen: reopen,
-        );
-        started.add(transfer.id);
-        queued++;
-      } catch (_) {
-        skipped++;
-      }
-    }
-    if (!context.mounted) return started;
-    if (queued == 0) {
-      _toast(context, 'No files could be sent.');
-    } else if (queued == 1 && skipped == 0) {
-      _toast(context,
-          'Sending ${result.files.first.name} → ${peer.name}…');
-    } else {
-      _toast(
-        context,
-        'Sending $queued file${queued == 1 ? '' : 's'} → ${peer.name}'
-        '${skipped > 0 ? ' ($skipped skipped)' : ''}…',
-      );
-    }
-    return started;
-  }
-
   void _toast(BuildContext context, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
