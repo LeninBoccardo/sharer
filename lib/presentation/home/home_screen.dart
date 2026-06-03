@@ -280,16 +280,32 @@ class _PeerList extends ConsumerWidget {
     final paired = [for (final p in peers) if (pairedIds.contains(p.id)) p];
     final nearby = [for (final p in peers) if (!pairedIds.contains(p.id)) p];
 
+    // Favorited paired peers lead the Paired section. Watch only a signature
+    // of the favorites among the *visible paired* peers, so a favorite toggle
+    // re-sorts exactly once and an unrelated toggle doesn't rebuild the list
+    // (audit #43). Partition-concat (not List.sort, which is unstable) keeps
+    // discovery order within each group.
+    ref.watch(favoriteDeviceIdsProvider.select((favs) =>
+        ([for (final p in paired) if (favs.contains(p.id)) p.id]..sort())
+            .join(',')));
+    final favs = ref.read(favoriteDeviceIdsProvider);
+    final orderedPaired = [
+      for (final p in paired)
+        if (favs.contains(p.id)) p,
+      for (final p in paired)
+        if (!favs.contains(p.id)) p,
+    ];
+
     // Render inline so the parent SingleChildScrollView owns the scroll;
     // a nested ListView here would conflict.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (paired.isNotEmpty) ...[
+        if (orderedPaired.isNotEmpty) ...[
           const _SectionHeader(label: 'Paired'),
-          for (var i = 0; i < paired.length; i++) ...[
+          for (var i = 0; i < orderedPaired.length; i++) ...[
             if (i > 0) const SizedBox(height: 8),
-            _PeerTile(peer: paired[i]),
+            _PeerTile(peer: orderedPaired[i]),
           ],
         ],
         if (paired.isNotEmpty && nearby.isNotEmpty) const SizedBox(height: 16),
@@ -343,6 +359,15 @@ class _PeerTile extends ConsumerWidget {
     final tileSemantics =
         '${peer.name}, ${isPaired ? 'paired' : 'not paired'}, '
         '${peer.isReachable ? 'reachable' : 'resolving address'}';
+    // Favorite + saved-address hint are paired-only and per-tile (.select /
+    // family key) so they never widen the list rebuild (audit #43).
+    final isFav = isPaired
+        ? ref.watch(
+            favoriteDeviceIdsProvider.select((ids) => ids.contains(peer.id)))
+        : false;
+    final savedAddress = isPaired
+        ? (ref.watch(peerReachableViaCacheProvider(peer.id)).value ?? false)
+        : false;
     return Semantics(
       container: true,
       label: tileSemantics,
@@ -375,9 +400,52 @@ class _PeerTile extends ConsumerWidget {
                 ),
             ],
           ),
-          subtitle: Text(
-              peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…'),
-          trailing: const Icon(Icons.send),
+          isThreeLine: savedAddress,
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(peer.isReachable
+                  ? '${peer.host}:${peer.port}'
+                  : 'Resolving…'),
+              // "Saved address": we hold a fresh cached IP for this paired
+              // peer, so a send will likely connect fast even before mDNS.
+              if (savedAddress)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.bookmark_outline,
+                        size: 14, color: theme.colorScheme.outline),
+                    const SizedBox(width: 4),
+                    Text('Saved address',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: theme.colorScheme.outline)),
+                  ],
+                ),
+            ],
+          ),
+          trailing: isPaired
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // IconButton absorbs its own tap, so toggling the pin does
+                    // NOT bubble to ListTile.onTap (the send path).
+                    IconButton(
+                      icon: Icon(isFav ? Icons.star : Icons.star_border,
+                          size: 20,
+                          color: isFav
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.outline),
+                      tooltip: isFav ? 'Unpin' : 'Pin to top',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => ref
+                          .read(favoriteDeviceIdsProvider.notifier)
+                          .toggle(peer.id),
+                    ),
+                    const Icon(Icons.send),
+                  ],
+                )
+              : const Icon(Icons.send),
           onTap: peer.isReachable
               ? () => _onTap(context, ref, isPaired: isPaired)
               : null,

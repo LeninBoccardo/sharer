@@ -36,6 +36,7 @@ import '../data/security/secure_key_value_store.dart';
 import '../data/security/tls_key_material.dart';
 import '../data/security/tls_key_material_store.dart';
 import '../data/storage/downloads_locator.dart';
+import '../data/storage/favorites_store.dart';
 import '../data/storage/peer_cache_store.dart';
 import '../data/system/brightness_controller.dart';
 import '../data/transport/http_file_client.dart';
@@ -157,6 +158,49 @@ final trustedNetworksProvider = StreamProvider<Set<String>>((ref) {
 
 final peerCacheProvider = Provider<PeerCacheRepository>((ref) {
   return PeerCacheStore(ref.watch(sharedPreferencesProvider));
+});
+
+final favoritesStoreProvider = Provider<FavoritesStore>((ref) {
+  return FavoritesStore(ref.watch(sharedPreferencesProvider));
+});
+
+/// Pinned/favorite peer deviceIds — instant in-memory state, persisted to
+/// prefs. Audit #43: this hands back a fresh `Set` on every change, so
+/// consumers MUST `.select((ids) => ids.contains(peerId))` to avoid rebuilding
+/// on an unrelated favorite toggle.
+class FavoritesNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => ref.watch(favoritesStoreProvider).load();
+
+  /// Persist the toggle AND update in-memory state so the star flips instantly
+  /// without a prefs round-trip.
+  Future<void> toggle(String deviceId) async {
+    final nowFav = await ref.read(favoritesStoreProvider).toggle(deviceId);
+    final next = {...state};
+    if (nowFav) {
+      next.add(deviceId);
+    } else {
+      next.remove(deviceId);
+    }
+    state = next;
+  }
+}
+
+final favoriteDeviceIdsProvider =
+    NotifierProvider<FavoritesNotifier, Set<String>>(FavoritesNotifier.new);
+
+/// True when the peer cache holds a FRESH host:port for [deviceId] — a hint
+/// that a send will likely connect fast even before mDNS resolves. autoDispose
+/// + keepAlive pins the resolved value for the tile's lifetime so unrelated
+/// rebuilds don't re-read prefs. Best-effort: staleness within a session is
+/// acceptable (the hint, not the send, is what this gates).
+final peerReachableViaCacheProvider =
+    FutureProvider.autoDispose.family<bool, String>((ref, deviceId) async {
+  ref.keepAlive();
+  final cached = await ref
+      .watch(peerCacheProvider)
+      .getById(deviceId, freshFor: const Duration(minutes: 10));
+  return cached?.isReachable ?? false;
 });
 
 /// Production secure key/value store. Override with InMemorySecureKeyValueStore
