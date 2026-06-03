@@ -454,7 +454,13 @@ class MainActivity : FlutterActivity() {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(Intent.EXTRA_STREAM)
                 }
-                u?.let { listOf(it) } ?: return null
+                if (u == null) {
+                    // No file URI: this is a text / URL share. Wrap EXTRA_TEXT
+                    // as a cacheDir .txt so it reuses the entire file send
+                    // pipeline (Dart sees a normal IncomingSharedFile).
+                    return listOf(extractSharedText(intent) ?: return null)
+                }
+                listOf(u)
             }
             Intent.ACTION_SEND_MULTIPLE -> {
                 val list: ArrayList<Uri>? = if (Build.VERSION.SDK_INT >= 33) {
@@ -493,6 +499,58 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Wraps an ACTION_SEND text/URL share (EXTRA_TEXT, no file URI) as a
+     * cacheDir .txt so it threads through the exact same IncomingSharedFile
+     * pipeline a file share uses — no Dart-side special-casing. Keeps the
+     * `share_` prefix so the 24h cache sweep + deferred-delete reap it.
+     * Returns the same {path,name,size,mimeType} map shape as copyToCache.
+     */
+    private fun extractSharedText(intent: Intent): Map<String, Any?>? {
+        // getCharSequenceExtra (not getStringExtra): some apps share a
+        // Spanned/CharSequence; toString() flattens it to plain text.
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+        if (text.isNullOrBlank()) return null
+        val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
+        val displayName = deriveTextFileName(subject, text)
+        return try {
+            val safe = displayName.replace(Regex("[\\\\/]"), "_")
+            val outFile = File(cacheDir, "share_${System.nanoTime()}_$safe")
+            outFile.writeText(text, Charsets.UTF_8)
+            mapOf(
+                "path" to outFile.absolutePath,
+                "name" to displayName,
+                "size" to outFile.length(),
+                "mimeType" to "text/plain",
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Derives a filesystem-safe .txt name from EXTRA_SUBJECT, a single URL's
+     *  host, or the first line of the shared text. */
+    private fun deriveTextFileName(subject: String?, text: String): String {
+        val fromSubject = subject?.trim()?.takeIf { it.isNotEmpty() }
+        val base = fromSubject ?: run {
+            val trimmed = text.trim()
+            val asUri = runCatching { Uri.parse(trimmed) }.getOrNull()
+            if (!trimmed.contains(Regex("\\s")) &&
+                (asUri?.scheme == "http" || asUri?.scheme == "https") &&
+                asUri.host != null
+            ) {
+                asUri.host!!
+            } else {
+                trimmed.lineSequence().firstOrNull()?.trim()
+                    ?.takeIf { it.isNotEmpty() }?.take(40)
+                    ?: "shared-text"
+            }
+        }
+        val stem = base.replace(Regex("[^A-Za-z0-9 ._-]"), "_")
+            .trim().ifEmpty { "shared-text" }.take(60)
+        return if (stem.endsWith(".txt", ignoreCase = true)) stem else "$stem.txt"
     }
 
     private fun queryDisplayName(uri: Uri): String? {

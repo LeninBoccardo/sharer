@@ -26,7 +26,11 @@ class IncomingSharedFile {
 /// **Android**: a custom MethodChannel + EventChannel pair owned by
 /// `MainActivity.kt`. The activity writes shared content:// URIs to
 /// the app's cacheDir before handing them off so Dart can read them
-/// with plain `dart:io`. Two delivery paths:
+/// with plain `dart:io`. A text/URL share (ACTION_SEND with EXTRA_TEXT and
+/// no file URI) is likewise wrapped by MainActivity into a cacheDir `.txt`
+/// and surfaced as an ordinary [IncomingSharedFile] (mimeType `text/plain`),
+/// so there is no Dart-side special-casing for text shares. Two delivery
+/// paths:
 ///
 ///   - [consumeInitial] returns the share that triggered a cold-start
 ///     launch; called once at boot before listening to [shares].
