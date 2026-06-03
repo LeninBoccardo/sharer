@@ -52,6 +52,7 @@ Transfer _t(
   int sent = 0,
   int total = 100,
   bool canRetry = false,
+  String? error,
 }) =>
     Transfer(
       id: id,
@@ -64,6 +65,7 @@ Transfer _t(
       status: status,
       startedAt: DateTime.utc(2026, 6, 2),
       canRetry: canRetry,
+      errorMessage: error,
     );
 
 Widget _harness(_FakeTransferService svc) => ProviderScope(
@@ -149,6 +151,27 @@ void main() {
 
     expect(find.textContaining('Source no longer available'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Retry'), findsNothing);
+  });
+
+  testWidgets('failed card shows the mapped headline and a Details sheet',
+      (tester) async {
+    final svc = _FakeTransferService();
+    addTearDown(svc.dispose);
+    svc.emit([
+      _t('t1', TransferStatus.failed,
+          error: 'SocketException: Connection refused', canRetry: true)
+    ]);
+
+    await tester.pumpWidget(_harness(svc));
+    await tester.pump();
+
+    // Friendly headline, not the raw SocketException string.
+    expect(find.text('Peer not reachable'), findsOneWidget);
+    expect(find.textContaining('SocketException'), findsNothing);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Technical details'), findsOneWidget);
   });
 
   testWidgets('shows a spinner until the scoped transfer appears',

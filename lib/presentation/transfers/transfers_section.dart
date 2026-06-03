@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../domain/entities/transfer.dart';
+import '../../domain/transfer/transfer_error_guidance.dart';
+import 'transfer_detail_sheet.dart';
 import 'transfer_rate_line.dart';
 
 /// Compact list of in-flight + recently-completed transfers, rendered
@@ -142,15 +144,24 @@ class _TransferTile extends ConsumerWidget {
                   ),
                 ),
             ],
-            if (transfer.status == TransferStatus.failed &&
-                transfer.errorMessage != null) ...[
+            if (transfer.status == TransferStatus.failed) ...[
               const SizedBox(height: 6),
               Text(
-                transfer.errorMessage!,
+                mapTransferError(transfer.errorMessage,
+                        direction: transfer.direction)
+                    .headline,
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.error),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () =>
+                      showTransferDetailSheet(context, ref, transfer),
+                  child: const Text('Details'),
+                ),
               ),
             ],
           ],

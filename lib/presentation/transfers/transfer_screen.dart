@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../domain/entities/transfer.dart';
+import '../../domain/transfer/transfer_error_guidance.dart';
+import 'transfer_detail_sheet.dart';
 import 'transfer_rate_line.dart';
 
 /// Dedicated post-tap transfer screen (docs/v1/ux.md primary send flow).
@@ -107,29 +109,48 @@ class _TransferCard extends ConsumerWidget {
             ],
             if (t.status == TransferStatus.failed) ...[
               Text(
-                t.errorMessage ?? 'Transfer failed',
+                mapTransferError(t.errorMessage, direction: t.direction)
+                    .headline,
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.error),
               ),
               const SizedBox(height: 12),
               // "Peer not reachable -> retry" (ux.md). v1 retries from zero;
-              // shown only when the source can be re-opened.
+              // Retry shown only when the source can be re-opened. A Details
+              // button (explicit, never a whole-card gesture that would
+              // swallow Retry) opens the failure-reason sheet.
               if (t.canRetry)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: FilledButton.icon(
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry'),
-                    onPressed: () =>
-                        ref.read(transferServiceProvider).retry(t.id),
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () =>
+                          showTransferDetailSheet(context, ref, t),
+                      child: const Text('Details'),
+                    ),
+                    const SizedBox(width: 4),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                      onPressed: () =>
+                          ref.read(transferServiceProvider).retry(t.id),
+                    ),
+                  ],
                 )
-              else
+              else ...[
                 Text(
                   'Source no longer available — share or pick the file again.',
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.outline),
                 ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => showTransferDetailSheet(context, ref, t),
+                    child: const Text('Details'),
+                  ),
+                ),
+              ],
             ],
             if (t.status == TransferStatus.cancelled)
               Text(
