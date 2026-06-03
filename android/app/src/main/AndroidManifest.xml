@@ -5,8 +5,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <!-- Reading the SSID on Android 8+ requires location permission. -->
+    <!-- Reading the SSID on Android 8+ requires location permission, granted
+         at runtime (see WifiNamePermission / the "Wi-Fi name hidden" banner).
+         COARSE is declared alongside FINE so the Android 12+ precise/approximate
+         toggle renders correctly; the SSID read needs FINE. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- Slice 4.3 (pairing): scanning the other device's QR via mobile_scanner. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />

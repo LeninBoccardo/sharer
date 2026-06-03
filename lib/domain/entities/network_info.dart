@@ -37,6 +37,21 @@ class NetworkInfo {
 
   bool get hasNetwork => ssid != null || ipv4 != null;
 
+  /// True on a Wi-Fi link whose SSID could not be read (null or empty).
+  ///
+  /// This is one signal serving two purposes:
+  ///   * **UX** — the "Wi-Fi name hidden" prompt that asks for the location
+  ///     permission (Android) or to enable OS location (Windows), since the
+  ///     SSID read is gated behind it.
+  ///   * **Trust (#17)** — a "weak fingerprint" marker. With no SSID the
+  ///     [fingerprint] degenerates to `|subnet`, so the network can only be
+  ///     recognised by its /24 IP range — a different Wi-Fi handing out the
+  ///     same range would match identically. Trusting such a network is a
+  ///     deliberate, subnet-only (spoofable) choice, so the UI gates it
+  ///     behind a confirmation and flags the stored entry.
+  bool get isUnnamedWifi =>
+      linkType == NetworkLinkType.wifi && (ssid == null || ssid!.isEmpty);
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||

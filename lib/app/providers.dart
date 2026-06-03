@@ -16,6 +16,7 @@ import '../data/identity/platform_device_name.dart';
 import '../data/network/network_source.dart';
 import '../data/network/network_watcher_impl.dart';
 import '../data/network/trusted_networks_store.dart';
+import '../data/network/wifi_name_permission_impl.dart';
 import '../data/notifications/foreground_service_controller.dart';
 import '../data/notifications/foreground_service_gateway.dart';
 import '../data/notifications/notification_coordinator.dart';
@@ -54,6 +55,7 @@ import '../domain/repositories/paired_devices_repository.dart';
 import '../domain/repositories/peer_cache_repository.dart';
 import '../domain/repositories/peer_discovery_repository.dart';
 import '../domain/repositories/transfer_service.dart';
+import '../domain/repositories/wifi_name_permission.dart';
 import '../data/security/invite_controller.dart';
 import '../presentation/share/pending_shares_controller.dart';
 import '../presentation/transfers/received_file_actions.dart';
@@ -154,6 +156,18 @@ final isOnTrustedNetworkProvider = StreamProvider<bool>((ref) {
 
 final trustedNetworksProvider = StreamProvider<Set<String>>((ref) {
   return ref.watch(networkWatcherProvider).watchTrusted();
+});
+
+/// Gates reading the current Wi-Fi name (SSID). Android/iOS use the location
+/// permission (real runtime dialog via permission_handler); desktop has no
+/// app-level grant and deep-links to OS location settings instead. Overridable
+/// with a fake in widget tests so the "Wi-Fi name hidden" banner + diagnostics
+/// flows stay platform-channel-free.
+final wifiNamePermissionProvider = Provider<WifiNamePermission>((ref) {
+  if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    return const LocationWifiNamePermission();
+  }
+  return const DesktopWifiNamePermission();
 });
 
 final peerCacheProvider = Provider<PeerCacheRepository>((ref) {

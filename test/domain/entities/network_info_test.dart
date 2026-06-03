@@ -42,5 +42,35 @@ void main() {
       const b = NetworkInfo(ssid: 'X', subnet: '192.168.2.0/24');
       expect(a.fingerprint, isNot(equals(b.fingerprint)));
     });
+
+    group('isUnnamedWifi', () {
+      test('true for a Wi-Fi link with a null SSID', () {
+        const n = NetworkInfo(
+          linkType: NetworkLinkType.wifi,
+          ipv4: '192.168.68.10',
+          subnet: '192.168.68.0/24',
+        );
+        expect(n.isUnnamedWifi, isTrue);
+      });
+
+      test('true for a Wi-Fi link with an empty SSID', () {
+        const n = NetworkInfo(linkType: NetworkLinkType.wifi, ssid: '');
+        expect(n.isUnnamedWifi, isTrue);
+      });
+
+      test('false once the SSID is readable', () {
+        const n = NetworkInfo(linkType: NetworkLinkType.wifi, ssid: 'Home');
+        expect(n.isUnnamedWifi, isFalse);
+      });
+
+      test('false on Ethernet even though it has no SSID', () {
+        const n = NetworkInfo(
+          linkType: NetworkLinkType.ethernet,
+          ipv4: '10.0.0.5',
+          subnet: '10.0.0.0/24',
+        );
+        expect(n.isUnnamedWifi, isFalse);
+      });
+    });
   });
 }
