@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../domain/entities/device_identity.dart';
 import '../../domain/entities/network_info.dart';
+import '../network/trust_network_action.dart';
 import '../network/wifi_name_prompt.dart';
 
 class DiagnosticsScreen extends ConsumerWidget {
@@ -261,7 +262,7 @@ class _CurrentNetworkCard extends ConsumerWidget {
                         icon: const Icon(Icons.shield),
                         label: const Text('Trust this network'),
                         onPressed: () =>
-                            ref.read(networkWatcherProvider).trust(network),
+                            trustNetworkWithConfirm(context, ref, network),
                       ),
               ),
             ],
@@ -337,15 +338,38 @@ class _TrustedTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
     final parts = fingerprint.split('|');
-    final ssid = parts.isNotEmpty && parts[0].isNotEmpty ? parts[0] : '(no SSID)';
-    final subnet = parts.length > 1 && parts[1].isNotEmpty ? parts[1] : '(no subnet)';
+    final ssidPart = parts.isNotEmpty ? parts[0] : '';
+    final subnet =
+        parts.length > 1 && parts[1].isNotEmpty ? parts[1] : '(no subnet)';
+    // #17: an entry with no SSID half was trusted on its /24 subnet alone — a
+    // weaker, spoofable match. Flag it (warning icon + an explicit note)
+    // rather than letting "(no SSID)" read as an ordinary network.
+    final isSubnetOnly = ssidPart.isEmpty;
+    final ssid = isSubnetOnly ? '(no SSID)' : ssidPart;
 
     return Card(
       child: ListTile(
-        leading: const Icon(Icons.wifi_lock_outlined),
+        leading: Icon(
+          isSubnetOnly ? Icons.gpp_maybe_outlined : Icons.wifi_lock_outlined,
+          color: isSubnetOnly ? theme.colorScheme.error : null,
+        ),
         title: Text(ssid),
-        subtitle: Text(subnet),
+        subtitle: isSubnetOnly
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(subnet),
+                  Text(
+                    'Recognised by IP range only',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.error),
+                  ),
+                ],
+              )
+            : Text(subnet),
         trailing: IconButton(
           icon: const Icon(Icons.delete_outline),
           tooltip: 'Remove',

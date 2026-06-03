@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
+import '../network/trust_network_action.dart';
 
 /// Shown when the device is on an unrecognized network (Wi-Fi or
 /// Ethernet). Per the security model (docs/v1/security.md), discoverability
@@ -54,9 +55,7 @@ class QuietModeBanner extends ConsumerWidget {
             ),
           ),
           TextButton(
-            onPressed: () async {
-              await ref.read(networkWatcherProvider).trust(network);
-            },
+            onPressed: () => trustNetworkWithConfirm(context, ref, network),
             style: TextButton.styleFrom(
               foregroundColor: theme.colorScheme.onTertiaryContainer,
             ),
