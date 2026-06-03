@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
@@ -58,6 +60,10 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
   late PairInvite _current;
   bool _busy = false;
 
+  /// a11y: guards the one-shot read-aloud so the modal's rebuilds (waiting
+  /// spinner, status transitions) don't re-announce the number every frame.
+  bool _announced = false;
+
   /// Guards against a double close. Audit #6: the decline path used to
   /// fire two independent closes — the `declined` stream status drives
   /// `_toastAndClose` via the `ref.listen` block AND `_finalize` called
@@ -73,6 +79,26 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
   void initState() {
     super.initState();
     _current = widget.initial;
+    // a11y: actively read the verification number aloud the moment the modal
+    // appears — focus traversal alone makes a TalkBack/Narrator user hunt for
+    // the node first. One-shot (the modal rebuilds on every invite emission,
+    // so announcing in build() would spam the reader); post-frame so the
+    // semantics binding + Directionality are ready. announce()/haptics are
+    // best-effort and no-op when a11y/haptics are off.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _announced) return;
+      _announced = true;
+      // A confirmation is being requested — a subtle light impact draws
+      // attention without being a heavy "error" buzz.
+      HapticFeedback.lightImpact();
+      final digits = _current.fingerprint.split('').join(' ');
+      SemanticsService.sendAnnouncement(
+        View.of(context),
+        'Verification number: $digits. Check it matches the other device, '
+        "then choose Matches or Doesn't match.",
+        Directionality.of(context),
+      );
+    });
   }
 
   @override
@@ -189,6 +215,11 @@ class _PairInviteModalState extends ConsumerState<PairInviteModal> {
   }
 
   Future<void> _finalize(bool match) async {
+    // Subtle tactile confirmation that the verdict tap registered. Sits at
+    // the very top so it fires once per real user tap and never on the
+    // stream-driven close path (_toastAndClose) — preserving the audit #6
+    // single-close contract.
+    HapticFeedback.selectionClick();
     setState(() => _busy = true);
     final controller = ref.read(inviteControllerProvider);
     try {

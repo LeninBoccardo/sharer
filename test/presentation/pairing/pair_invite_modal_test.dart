@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sharer/app/providers.dart';
@@ -100,5 +101,53 @@ void main() {
     expect(find.bySemanticsLabel('Verification number: 1 2 3 4 5 6'),
         findsOneWidget);
     handle.dispose();
+  });
+
+  testWidgets('opening the modal reads the verification number aloud',
+      (tester) async {
+    final controller = StreamController<PairInvite>.broadcast();
+    addTearDown(controller.close);
+
+    // SemanticsService.sendAnnouncement sends an AnnounceSemanticsEvent map
+    // over SystemChannels.accessibility — capture it.
+    final announced = <String>[];
+    tester.binding.defaultBinaryMessenger
+        .setMockDecodedMessageHandler<Object?>(SystemChannels.accessibility,
+            (message) async {
+      if (message is Map && message['type'] == 'announce') {
+        announced.add((message['data'] as Map)['message'] as String);
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockDecodedMessageHandler<Object?>(
+            SystemChannels.accessibility, null));
+
+    await _pumpAndOpenModal(tester, controller.stream);
+
+    expect(announced, isNotEmpty);
+    expect(announced.first, contains('Verification number'));
+    expect(announced.first, contains('1 2 3 4 5 6'));
+  });
+
+  testWidgets('opening the modal fires a subtle light-impact haptic',
+      (tester) async {
+    final controller = StreamController<PairInvite>.broadcast();
+    addTearDown(controller.close);
+
+    final haptics = <String>[];
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'HapticFeedback.vibrate') {
+        haptics.add(call.arguments as String? ?? '');
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null));
+
+    await _pumpAndOpenModal(tester, controller.stream);
+
+    expect(haptics, contains('HapticFeedbackType.lightImpact'));
   });
 }
