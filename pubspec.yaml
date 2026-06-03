@@ -157,6 +157,14 @@ dependencies:
   # together with file_picker 12.x.
   share_plus: '>=12.0.2 <13.0.0'
 
+  # Phase 5: boost display brightness to max while the pairing-code screen
+  # shows the QR so it scans in dim light, restoring on exit. Kept on the
+  # 2.x line (^2.1.9 => >=2.1.9 <3.0.0): pub resolved it without bumping
+  # win32 off 5.x, preserving the file_picker 11.x pin. Wrapped behind
+  # data/system/brightness_controller.dart (the only importer) so a future
+  # 3.x API shift is a one-file change.
+  screen_brightness: ^2.1.9
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

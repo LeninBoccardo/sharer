@@ -37,6 +37,7 @@ import '../data/security/tls_key_material.dart';
 import '../data/security/tls_key_material_store.dart';
 import '../data/storage/downloads_locator.dart';
 import '../data/storage/peer_cache_store.dart';
+import '../data/system/brightness_controller.dart';
 import '../data/transport/http_file_client.dart';
 import '../data/transport/http_file_server.dart';
 import '../data/transport/transfer_service_impl.dart';
@@ -487,6 +488,15 @@ final windowsTrayControllerProvider =
   ref.onDispose(controller.dispose);
   controller.start();
   return controller;
+});
+
+/// Phase 5: drives display brightness to maximum while the pairing-code
+/// screen shows the QR (so it scans in dim light), restoring on exit. Wraps
+/// the screen_brightness plugin behind [BrightnessController] so the pairing
+/// screen stays widget-testable with a fake. Best-effort / no-op on hardware
+/// without programmatic brightness control.
+final brightnessControllerProvider = Provider<BrightnessController>((ref) {
+  return ScreenBrightnessController();
 });
 
 // ----- OS share-sheet integration (slice 5.5) -----

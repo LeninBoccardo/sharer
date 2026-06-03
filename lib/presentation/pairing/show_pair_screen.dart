@@ -7,8 +7,10 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../app/providers.dart';
 import '../../data/network/local_addresses.dart';
 import '../../data/security/pairing_codec.dart';
+import '../../data/system/brightness_controller.dart';
 import '../../domain/entities/paired_device.dart';
 import '../../domain/entities/pairing_offer.dart';
+import 'scan_pair_screen.dart';
 
 /// Initiator side of pairing. Mints a fresh offer the moment the screen
 /// opens and renders it as a QR code (primary) plus a 6-digit numeric
@@ -30,11 +32,21 @@ class _ShowPairState extends ConsumerState<ShowPairScreen>
   Timer? _countdownTicker;
   Duration _timeLeft = Duration.zero;
 
+  /// Captured in initState so dispose() can restore brightness without a
+  /// ref.read across teardown.
+  late final BrightnessController _brightness;
+
   @override
   void initState() {
     super.initState();
+    _brightness = ref.read(brightnessControllerProvider);
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Boost brightness as soon as the screen is up (independent of whether
+      // the offer mint succeeds) so the QR scans in dim light.
+      _brightness.boostToMax();
+      _bootstrap();
+    });
   }
 
   /// Audit #20 mitigation: the on-screen QR *is* the PSK (the trust
@@ -53,6 +65,8 @@ class _ShowPairState extends ConsumerState<ShowPairScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
+      // The OS may have reverted application brightness when we lost focus.
+      _brightness.boostToMax();
       // Re-mint only if we previously tore an offer down (or never got
       // one) and aren't in a terminal error state the user must act on.
       if (_offer == null && _error == null) {
@@ -62,7 +76,9 @@ class _ShowPairState extends ConsumerState<ShowPairScreen>
       }
       return;
     }
-    // paused / inactive / hidden / detached: stop showing the secret.
+    // paused / inactive / hidden / detached: stop showing the secret + drop
+    // brightness so we never leave the device pinned bright in the background.
+    _brightness.restore();
     final offer = _offer;
     if (offer != null) {
       _countdownTicker?.cancel();
@@ -161,6 +177,10 @@ class _ShowPairState extends ConsumerState<ShowPairScreen>
 
   @override
   void dispose() {
+    // Non-negotiable safety net: never leave the device pinned bright after
+    // leaving the QR (covers pushReplacement to Scan, back button, and the
+    // success-snackbar maybePop).
+    _brightness.restore();
     WidgetsBinding.instance.removeObserver(this);
     _countdownTicker?.cancel();
     final offer = _offer;
@@ -239,6 +259,20 @@ class _ShowPairState extends ConsumerState<ShowPairScreen>
                     ),
                   ),
                 ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextButton.icon(
+            icon: const Icon(Icons.qr_code_scanner, size: 18),
+            label: const Text('Scan instead'),
+            // pushReplacement (not push): replacing disposes this screen,
+            // whose dispose() cancels the live PSK offer + restores
+            // brightness — so flipping to scan tears the offer down cleanly
+            // instead of leaving it live behind a stacked route.
+            onPressed: () => Navigator.of(context).pushReplacement(
+              MaterialPageRoute<void>(
+                builder: (_) => const ScanPairScreen(),
               ),
             ),
           ),
