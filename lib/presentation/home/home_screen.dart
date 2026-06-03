@@ -337,30 +337,51 @@ class _PeerTile extends ConsumerWidget {
     // (pairedDeviceIdsProvider hands back a fresh, identity-equal Set).
     final isPaired = ref
         .watch(pairedDeviceIdsProvider.select((ids) => ids.contains(peer.id)));
-    return Card(
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: CircleAvatar(
-          backgroundColor: theme.colorScheme.primaryContainer,
-          child: Icon(Icons.devices,
-              color: theme.colorScheme.onPrimaryContainer),
-        ),
-        title: Row(
-          children: [
-            Flexible(child: Text(peer.name)),
-            if (isPaired) ...[
+    // a11y: announce the tile as one coherent node so paired/reachable state
+    // is never conveyed by color/icon alone. excludeSemantics is NOT set, so
+    // the ListTile's own "tap to send" button semantics still merge in.
+    final tileSemantics =
+        '${peer.name}, ${isPaired ? 'paired' : 'not paired'}, '
+        '${peer.isReachable ? 'reachable' : 'resolving address'}';
+    return Semantics(
+      container: true,
+      label: tileSemantics,
+      child: Card(
+        child: ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          leading: CircleAvatar(
+            backgroundColor: theme.colorScheme.primaryContainer,
+            child: Icon(Icons.devices,
+                color: theme.colorScheme.onPrimaryContainer),
+          ),
+          title: Row(
+            children: [
+              Flexible(child: Text(peer.name)),
               const SizedBox(width: 8),
-              Icon(Icons.verified_user,
-                  size: 16, color: theme.colorScheme.primary),
+              // Both states carry a distinct SHAPE + Semantics label, so
+              // paired vs not-paired never relies on color alone.
+              if (isPaired)
+                Semantics(
+                  label: 'Paired',
+                  child: Icon(Icons.verified_user,
+                      size: 16, color: theme.colorScheme.primary),
+                )
+              else
+                Semantics(
+                  label: 'Not paired',
+                  child: Icon(Icons.lock_open_outlined,
+                      size: 16, color: theme.colorScheme.outline),
+                ),
             ],
-          ],
+          ),
+          subtitle: Text(
+              peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…'),
+          trailing: const Icon(Icons.send),
+          onTap: peer.isReachable
+              ? () => _onTap(context, ref, isPaired: isPaired)
+              : null,
         ),
-        subtitle:
-            Text(peer.isReachable ? '${peer.host}:${peer.port}' : 'Resolving…'),
-        trailing: const Icon(Icons.send),
-        onTap: peer.isReachable
-            ? () => _onTap(context, ref, isPaired: isPaired)
-            : null,
       ),
     );
   }

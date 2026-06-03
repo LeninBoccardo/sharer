@@ -182,10 +182,13 @@ class _SuccessGlyph extends StatelessWidget {
       transitionBuilder: (child, anim) =>
           ScaleTransition(scale: anim, child: child),
       child: status == TransferStatus.completed
-          ? Icon(
-              Icons.check_circle,
+          ? Semantics(
               key: const ValueKey('done'),
-              color: Theme.of(context).colorScheme.tertiary,
+              label: 'Completed',
+              child: Icon(
+                Icons.check_circle,
+                color: Theme.of(context).colorScheme.tertiary,
+              ),
             )
           : const SizedBox.shrink(key: ValueKey('pending')),
     );

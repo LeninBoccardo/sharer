@@ -86,10 +86,13 @@ class _TransferTile extends ConsumerWidget {
           children: [
             Row(
               children: [
-                Icon(
-                  isSend ? Icons.upload : Icons.download,
-                  size: 18,
-                  color: theme.colorScheme.primary,
+                Semantics(
+                  label: isSend ? 'Sending' : 'Receiving',
+                  child: Icon(
+                    isSend ? Icons.upload : Icons.download,
+                    size: 18,
+                    color: theme.colorScheme.primary,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
