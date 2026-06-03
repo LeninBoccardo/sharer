@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../domain/entities/device_identity.dart';
 import '../../domain/entities/network_info.dart';
+import '../network/wifi_name_prompt.dart';
 
 class DiagnosticsScreen extends ConsumerWidget {
   const DiagnosticsScreen({super.key});
@@ -219,7 +220,28 @@ class _CurrentNetworkCard extends ConsumerWidget {
               _Kv(label: 'Link', value: _labelForLink(network.linkType)),
               const SizedBox(height: 6),
               if (network.linkType == NetworkLinkType.wifi) ...[
-                _Kv(label: 'SSID', value: network.ssid ?? '(unknown)'),
+                _Kv(
+                  label: 'SSID',
+                  value: network.isUnnamedWifi
+                      ? '(hidden)'
+                      : (network.ssid ?? '(unknown)'),
+                ),
+                // The SSID read is gated behind location; surface a way to
+                // grant it (Android) / open OS location settings (Windows)
+                // right where the missing name shows.
+                if (network.isUnnamedWifi)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      icon: const Icon(Icons.wifi_find, size: 18),
+                      label: const Text('Enable Wi-Fi name'),
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: () => promptForWifiName(ref),
+                    ),
+                  ),
                 const SizedBox(height: 6),
               ],
               _Kv(label: 'IP', value: network.ipv4 ?? '—'),

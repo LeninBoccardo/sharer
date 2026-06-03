@@ -22,6 +22,7 @@ import 'interrupted_pairing_banner.dart';
 import 'peer_send_coordinator.dart';
 import 'quiet_mode_banner.dart';
 import 'web_native_app_banner.dart';
+import 'wifi_name_banner.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -205,6 +206,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               children: [
                 const WebNativeAppBanner(),
                 const QuietModeBanner(),
+                const WifiNameBanner(),
                 const BatteryOptimizationBanner(),
                 const InterruptedPairingBanner(),
                 const SharePendingBanner(),
