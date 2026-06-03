@@ -149,6 +149,14 @@ dependencies:
   # ShellExecute, macOS / Linux equivalents.
   open_filex: ^4.7.0
 
+  # Phase 5: "Share onward" a received file via the OS share sheet.
+  # PINNED to the 12.x line on purpose: share_plus 13.x pulls win32 ^6.0.1
+  # and would break the file_picker 11.x win32 ^5 pin (same landmine as
+  # network_info_plus 8.x / device_info_plus 13.x). 12.0.2 needs
+  # win32 ^5.5.3, satisfied by the resolved win32 5.x. Bump to 13.x only
+  # together with file_picker 12.x.
+  share_plus: '>=12.0.2 <13.0.0'
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

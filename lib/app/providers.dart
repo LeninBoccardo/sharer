@@ -1,9 +1,11 @@
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, Process;
+import 'dart:ui' show Rect;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/discovery/bonsoir_mdns_backend.dart';
@@ -52,6 +54,7 @@ import '../domain/repositories/peer_discovery_repository.dart';
 import '../domain/repositories/transfer_service.dart';
 import '../data/security/invite_controller.dart';
 import '../presentation/share/pending_shares_controller.dart';
+import '../presentation/transfers/received_file_actions.dart';
 
 /// Composition root: every cross-layer binding is declared here so that
 /// presentation code never reaches into `data/` directly. To swap an impl
@@ -531,24 +534,72 @@ final notificationRouterProvider =
   final router = NotificationRouter(
     service: ref.watch(notificationServiceProvider),
     inviteController: ref.watch(inviteControllerProvider),
-    openFile: (path) async {
-      // Slice 5.x.3.5: Android 11+ MediaStore can hand back a
-      // `content://` URI when MediaColumns.DATA resolves to null.
-      // OpenFilex only handles absolute file paths, so route URIs
-      // through the dedicated Kotlin channel that fires
-      // Intent.ACTION_VIEW with FLAG_GRANT_READ_URI_PERMISSION.
-      if (path.startsWith('content://')) {
-        if (Platform.isAndroid) {
-          const channel = MethodChannel('sharer.downloads/methods');
-          await channel.invokeMethod<bool>('openByUri', {'uri': path});
-        }
-        return;
-      }
-      await OpenFilex.open(path);
-    },
+    // Same path the received-file tile "Open" action uses (see
+    // _openSavedPath) so the two surfaces never drift.
+    openFile: _openSavedPath,
     showMainWindow: tray.showMainWindow,
   );
   ref.onDispose(router.dispose);
   router.start();
   return router;
+});
+
+/// Opens a saved file in the OS default handler. Single source of truth for
+/// the content:// vs file-path branch, shared by the transfer-done
+/// notification ("Open" action) and the received-file tile.
+///
+/// Slice 5.x.3.5: Android 11+ MediaStore can hand back a `content://` URI
+/// when MediaColumns.DATA resolves to null. OpenFilex only handles absolute
+/// file paths, so route URIs through the Kotlin channel that fires
+/// Intent.ACTION_VIEW with FLAG_GRANT_READ_URI_PERMISSION.
+Future<void> _openSavedPath(String path) async {
+  if (path.startsWith('content://')) {
+    if (Platform.isAndroid) {
+      const channel = MethodChannel('sharer.downloads/methods');
+      await channel.invokeMethod<bool>('openByUri', {'uri': path});
+    }
+    return;
+  }
+  await OpenFilex.open(path);
+}
+
+/// Reveals [path] in the OS file manager on desktop (Explorer /select,
+/// Finder open -R, Linux xdg-open on the parent dir). On mobile there is no
+/// reliable "show in folder" intent, so this degrades to opening the file.
+Future<void> _revealSavedPath(String path) async {
+  if (Platform.isWindows) {
+    await Process.run('explorer.exe', ['/select,', path]);
+    return;
+  }
+  if (Platform.isMacOS) {
+    await Process.run('open', ['-R', path]);
+    return;
+  }
+  if (Platform.isLinux) {
+    final sep = path.lastIndexOf('/');
+    final dir = sep > 0 ? path.substring(0, sep) : path;
+    await Process.run('xdg-open', [dir]);
+    return;
+  }
+  await _openSavedPath(path);
+}
+
+/// Re-shares a received file via the OS share sheet. [origin] positions the
+/// iPad share popover. share_plus needs a real file path, so callers gate
+/// this off content:// values.
+Future<void> _shareSavedPath(String path, {Rect? origin}) async {
+  await SharePlus.instance.share(
+    ShareParams(files: [XFile(path)], sharePositionOrigin: origin),
+  );
+}
+
+/// OS-handoff actions for a completed received file, injected into the
+/// transfer tile so the widget stays free of open_filex / share_plus /
+/// dart:io. Recorder-overridable in tests.
+final receivedFileActionsProvider = Provider<ReceivedFileActions>((ref) {
+  return const ReceivedFileActions(
+    open: _openSavedPath,
+    reveal: _revealSavedPath,
+    shareOnward: _shareSavedPath,
+  );
 });
